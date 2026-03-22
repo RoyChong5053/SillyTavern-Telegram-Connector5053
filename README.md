@@ -104,9 +104,6 @@ SillyTavern Telegram Connector 是一个为 SillyTavern 设计的扩展，允许
 - **群聊功能增强**：
   - [ ] 响应群聊中@bot的消息
 
-- **媒体支持**：
-  - [ ] 支持发送图片
-
 - **消息格式**：
   - [ ] 实现markdown转义
   - [ ] Bot信息解析方式改为HTML 

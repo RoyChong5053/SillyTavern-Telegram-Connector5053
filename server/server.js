@@ -3,6 +3,8 @@ const TelegramBot = require('node-telegram-bot-api');
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const http = require('http');
 
 // 添加日志记录函数，带有时间戳
 function logWithTimestamp(level, ...args) {
@@ -674,6 +676,21 @@ wss.on('connection', ws => {
                 if (data.message) {
                     logWithTimestamp('log', `命令执行消息: ${data.message}`);
                 }
+            } else if (data.type === 'ai_image' && data.chatId) {
+                // 处理AI返回的图片
+                logWithTimestamp('log', `收到AI生成的图片，发送到Telegram用户 ${data.chatId}`);
+                try {
+                    const imageData = data.image; // 可以是 base64 data URL, URL, 或 Buffer
+                    const caption = data.caption || '';
+                    await sendImageToTelegram(data.chatId, imageData, caption);
+                } catch (error) {
+                    logWithTimestamp('error', `发送AI图片到Telegram失败:`, error.message);
+                    // 发送错误消息到用户
+                    bot.sendMessage(data.chatId, '抱歉，AI生成的图片发送失败。').catch(err => {});
+                }
+            } else if (data.type === 'user_image' && data.chatId) {
+                // 处理用户发送的图片（已在服务器端处理，这里记录）
+                logWithTimestamp('log', `收到用户图片 (chatId: ${data.chatId})，已转发到SillyTavern`);
             }
         } catch (error) {
             logWithTimestamp('error', '处理SillyTavern消息时出错:', error);
@@ -707,6 +724,76 @@ wss.on('connection', ws => {
     });
 });
 
+// === 图片处理函数 ===
+
+// 从Telegram下载文件（支持图片）
+async function downloadTelegramFile(fileId, chatId) {
+    try {
+        const file = await bot.getFile(fileId);
+        const fileUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+        
+        return new Promise((resolve, reject) => {
+            const protocol = fileUrl.startsWith('https') ? https : http;
+            protocol.get(fileUrl, (res) => {
+                if (res.statusCode !== 200) {
+                    reject(new Error(`下载失败，状态码: ${res.statusCode}`));
+                    return;
+                }
+                
+                const chunks = [];
+                res.on('data', (chunk) => chunks.push(chunk));
+                res.on('end', () => {
+                    const buffer = Buffer.concat(chunks);
+                    resolve({
+                        buffer: buffer,
+                        mimeType: res.headers['content-type'] || 'image/jpeg',
+                        fileName: file.file_path.split('/').pop() || `telegram_image_${fileId}.jpg`
+                    });
+                });
+            }).on('error', reject);
+        });
+    } catch (error) {
+        logWithTimestamp('error', `下载Telegram文件失败 (chatId: ${chatId}):`, error.message);
+        throw error;
+    }
+}
+
+// 将图片转换为base64（用于发送到SillyTavern）
+function bufferToBase64(buffer, mimeType) {
+    const base64 = buffer.toString('base64');
+    return `data:${mimeType};base64,${base64}`;
+}
+
+// 发送图片到Telegram
+async function sendImageToTelegram(chatId, imageData, caption = '') {
+    try {
+        // imageData 可以是 base64 string, Buffer, 或 URL
+        if (typeof imageData === 'string' && imageData.startsWith('data:')) {
+            // base64 data URL - 需要转换
+            const base64Data = imageData.split(',')[1];
+            const buffer = Buffer.from(base64Data, 'base64');
+            
+            await bot.sendPhoto(chatId, buffer, {
+                caption: caption,
+                filename: 'image.jpg'
+            });
+        } else if (Buffer.isBuffer(imageData)) {
+            await bot.sendPhoto(chatId, imageData, {
+                caption: caption,
+                filename: 'image.jpg'
+            });
+        } else if (typeof imageData === 'string' && imageData.startsWith('http')) {
+            await bot.sendPhoto(chatId, imageData, { caption: caption });
+        } else {
+            throw new Error('不支持的图片数据格式');
+        }
+        logWithTimestamp('log', `图片已发送到Telegram用户 ${chatId}`);
+    } catch (error) {
+        logWithTimestamp('error', `发送图片到Telegram失败:`, error.message);
+        throw error;
+    }
+}
+
 // 检查是否需要发送重启完成通知
 if (process.env.RESTART_NOTIFY_CHATID) {
     const chatId = parseInt(process.env.RESTART_NOTIFY_CHATID);
@@ -722,9 +809,8 @@ if (process.env.RESTART_NOTIFY_CHATID) {
 }
 
 // 监听Telegram消息
-bot.on('message', (msg) => {
+bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    const text = msg.text;
     const userId = msg.from.id;
     const username = msg.from.username || 'N/A';
 
@@ -732,7 +818,7 @@ bot.on('message', (msg) => {
     if (config.allowedUserIds && config.allowedUserIds.length > 0) {
         // 如果当前用户的ID不在白名单中
         if (!config.allowedUserIds.includes(userId)) {
-            logWithTimestamp('log', `拒绝了来自非白名单用户的访问：\n  - User ID: ${userId}\n  - Username: @${username}\n  - Chat ID: ${chatId}\n  - Message: "${text}"`);
+            logWithTimestamp('log', `拒绝了来自非白名单用户的访问：\n  - User ID: ${userId}\n  - Username: @${username}\n  - Chat ID: ${chatId}\n  - Message: "${msg.text || '[图片消息]'}"`);
             // 向该用户发送一条拒绝消息
             bot.sendMessage(chatId, '抱歉，您无权使用此机器人。').catch(err => {
                 logWithTimestamp('error', `向 ${chatId} 发送拒绝消息失败:`, err.message);
@@ -742,6 +828,41 @@ bot.on('message', (msg) => {
         }
     }
 
+    // 处理图片消息
+    if (msg.photo && msg.photo.length > 0) {
+        if (sillyTavernClient && sillyTavernClient.readyState === WebSocket.OPEN) {
+            try {
+                logWithTimestamp('log', `从Telegram用户 ${chatId} 收到图片，正在下载...`);
+                
+                // 获取最大尺寸的图片（最后一个元素是最大尺寸）
+                const fileId = msg.photo[msg.photo.length - 1].file_id;
+                const fileData = await downloadTelegramFile(fileId, chatId);
+                const base64Image = bufferToBase64(fileData.buffer, fileData.mimeType);
+                
+                logWithTimestamp('log', `图片下载完成，大小: ${fileData.buffer.length} bytes，发送到SillyTavern...`);
+                
+                // 发送图片到SillyTavern
+                sillyTavernClient.send(JSON.stringify({
+                    type: 'user_image',
+                    chatId: chatId,
+                    image: base64Image,
+                    caption: msg.caption || '',
+                    mimeType: fileData.mimeType
+                }));
+                
+                logWithTimestamp('log', `图片已发送到SillyTavern (chatId: ${chatId})`);
+            } catch (error) {
+                logWithTimestamp('error', `处理Telegram图片失败:`, error.message);
+                bot.sendMessage(chatId, '抱歉，处理您的图片时出现了错误。').catch(err => {});
+            }
+        } else {
+            logWithTimestamp('warn', '收到Telegram图片，但SillyTavern扩展未连接。');
+            bot.sendMessage(chatId, '抱歉，我现在无法连接到SillyTavern。请确保SillyTavern已打开并启用了Telegram扩展。');
+        }
+        return;
+    }
+
+    const text = msg.text;
     if (!text) return;
 
     if (text.startsWith('/')) {
@@ -760,7 +881,7 @@ bot.on('message', (msg) => {
         return;
     }
 
-    // 处理普通消息
+    // 处理普通文本消息
     if (sillyTavernClient && sillyTavernClient.readyState === WebSocket.OPEN) {
         logWithTimestamp('log', `从Telegram用户 ${chatId} 收到消息: "${text}"`);
         const payload = JSON.stringify({ type: 'user_message', chatId, text });
