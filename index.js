@@ -84,6 +84,91 @@ function connect() {
         try {
             data = JSON.parse(event.data);
 
+            // --- 用户图片处理 ---
+            if (data.type === 'user_image') {
+                console.log('[Telegram Bridge] 收到用户图片，发送给AI...', data);
+                
+                // 存储当前处理的chatId
+                lastProcessedChatId = data.chatId;
+                
+                // 标记为非流式模式
+                isStreamingMode = false;
+                
+                // 1. 发送"输入中"状态
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'typing_action', chatId: data.chatId }));
+                }
+                
+                // 2. 将用户图片发送到SillyTavern
+                // 注意：sendMessageAsUser 可能只支持文本，需要根据SillyTavern API调整
+                try {
+                    // 尝试使用带图片的参数调用
+                    await sendMessageAsUser({
+                        text: data.caption || '用户发送了一张图片',
+                        image: data.image,
+                        mimeType: data.mimeType
+                    });
+                } catch (error) {
+                    console.error('[Telegram Bridge] 发送图片到SillyTavern失败:', error);
+                    // 发送错误回服务器
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'error_message',
+                            chatId: data.chatId,
+                            text: '抱歉，处理您的图片时遇到了错误。'
+                        }));
+                    }
+                    return;
+                }
+                
+                // 3. 设置流式回调（与文本消息相同）
+                const streamCallback = (cumulativeText) => {
+                    isStreamingMode = true;
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'stream_chunk',
+                            chatId: data.chatId,
+                            text: cumulativeText,
+                        }));
+                    }
+                };
+                eventSource.on(event_types.STREAM_TOKEN_RECEIVED, streamCallback);
+                
+                // 4. 定义清理函数
+                const cleanup = () => {
+                    eventSource.removeListener(event_types.STREAM_TOKEN_RECEIVED, streamCallback);
+                    if (ws && ws.readyState === WebSocket.OPEN && isStreamingMode) {
+                        if (!data.error) {
+                            ws.send(JSON.stringify({ type: 'stream_end', chatId: data.chatId }));
+                        }
+                    }
+                };
+                
+                eventSource.once(event_types.GENERATION_ENDED, cleanup);
+                eventSource.once(event_types.GENERATION_STOPPED, cleanup);
+                
+                // 5. 触发SillyTavern的生成流程
+                try {
+                    const abortController = new AbortController();
+                    setExternalAbortController(abortController);
+                    await Generate('normal', { signal: abortController.signal });
+                } catch (error) {
+                    console.error("[Telegram Bridge] Generate() 错误:", error);
+                    await deleteLastMessage();
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'error_message',
+                            chatId: data.chatId,
+                            text: `抱歉，AI生成回复时遇到错误。\n您的上一条消息已被撤回，请重试。\n\n错误: ${error.message}`
+                        }));
+                    }
+                    data.error = true;
+                    cleanup();
+                }
+                
+                return;
+            }
+
             // --- 用户消息处理 ---
             if (data.type === 'user_message') {
                 console.log('[Telegram Bridge] 收到用户消息。', data);
@@ -419,6 +504,15 @@ function handleFinalMessage(lastMessageIdInChatArray) {
 
         // 确认这是我们刚刚通过Telegram触发的AI回复
         if (lastMessage && !lastMessage.is_user && !lastMessage.is_system) {
+            // === 新增：检查是否为图片消息 ===
+            // SillyTavern 图片消息通常包含 image_url 或 image_base64 字段
+            if (lastMessage.image_url || lastMessage.image_base64 || lastMessage.image) {
+                console.log('[Telegram Bridge] 检测到图片回复，跳过文本处理（图片已通过单独事件发送）');
+                lastProcessedChatId = null;
+                return;
+            }
+            // === 结束新增 ===
+            
             const messageElement = $(`#chat .mes[mesid="${lastMessageIndex}"]`);
 
             if (messageElement.length > 0) {
@@ -469,3 +563,39 @@ eventSource.on(event_types.GENERATION_ENDED, handleFinalMessage);
 
 // 添加对手动停止生成的处理
 eventSource.on(event_types.GENERATION_STOPPED, handleFinalMessage);
+
+// === 图片支持 ===
+// 监听 AI 生成图片的事件
+const imageEventHandler = async (imageData) => {
+    console.log('[Telegram Bridge] 检测到AI生成图片:', imageData);
+    
+    if (ws && ws.readyState === WebSocket.OPEN && lastProcessedChatId) {
+        try {
+            // 提取图片数据（根据 SillyTavern 的实际数据结构）
+            const imagePayload = {
+                type: 'ai_image',
+                chatId: lastProcessedChatId,
+                image: imageData.url || imageData.base64 || imageData,
+                caption: imageData.caption || imageData.description || ''
+            };
+            
+            ws.send(JSON.stringify(imagePayload));
+            console.log('[Telegram Bridge] 图片已发送到Telegram服务器');
+        } catch (error) {
+            console.error('[Telegram Bridge] 发送图片失败:', error);
+        }
+    }
+};
+
+// 尝试添加图片事件监听（支持多种事件名称）
+if (event_types.IMAGE_GENERATED) {
+    eventSource.on(event_types.IMAGE_GENERATED, imageEventHandler);
+    console.log('[Telegram Bridge] 已注册图片事件监听:', event_types.IMAGE_GENERATED);
+} else if (event_types.IMAGE_CREATED) {
+    eventSource.on(event_types.IMAGE_CREATED, imageEventHandler);
+    console.log('[Telegram Bridge] 已注册图片事件监听:', event_types.IMAGE_CREATED);
+} else {
+    // 备用：监听字符串事件名
+    eventSource.on('image_generated', imageEventHandler);
+    console.log('[Telegram Bridge] 已注册备用图片事件监听: image_generated');
+}
