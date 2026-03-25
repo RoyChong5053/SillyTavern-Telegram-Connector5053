@@ -87,8 +87,10 @@ function checkRestartProtection() {
     }
 }
 
-// 启动时检查重启保护
-checkRestartProtection();
+// 启动时检查重启保护（仅在设置了重启标记时）
+if (process.env.TELEGRAM_CLEAR_UPDATES === '1') {
+    checkRestartProtection();
+}
 
 // 检查配置文件是否存在
 const configPath = path.join(__dirname, './config.js');
