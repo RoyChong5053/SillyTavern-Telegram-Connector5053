@@ -79,7 +79,8 @@ function connect() {
         updateStatus('已连接', 'green');
     };
 
-    ws.onmessage = async (event) => {
+    // 定义消息处理函数
+    const messageHandler = async (event) => {
         let data;
         try {
             data = JSON.parse(event.data);
@@ -424,6 +425,19 @@ function connect() {
                 ws.send(JSON.stringify({ type: 'error_message', chatId: data.chatId, text: '处理您的请求时发生了一个内部错误。' }));
             }
         }
+    };
+
+    // 设置WebSocket消息处理器（包含心跳响应）
+    ws.onmessage = (event) => {
+        // 检查是否是ping消息（二进制ping帧）
+        if (event.data instanceof ArrayBuffer && event.data.byteLength === 0) {
+            // 这是ping帧，自动响应pong
+            console.log('[Telegram Bridge] 收到心跳ping，已自动响应');
+            return;
+        }
+        
+        // 正常消息交给消息处理器
+        messageHandler(event);
     };
 
     ws.onclose = () => {
