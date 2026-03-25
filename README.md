@@ -125,7 +125,7 @@ SillyTavern Telegram Connector 是一个为 SillyTavern 设计的扩展，允许
 - **错误处理与稳定性**：
   - [ ] `/exit`命令总是"退出操作超时，强制退出进程"
   - [x] 处理ST中"停止生成"按钮点击事件（GENERATION_STOPPED而非GENERATION_ENDED）
-  - [ ] 处理正在生成时发送新消息的情况（拦截并提示用户正在生成中，不提交到ST）
+  - [x] 处理正在生成时发送新消息的情况（拦截并提示用户正在生成中，不提交到ST）
   - [ ] 在`/switchchar`或`/switchchat`命令后通知server清空旧缓存状态
 
 - **技术优化**：

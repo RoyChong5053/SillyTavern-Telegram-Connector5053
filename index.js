@@ -85,6 +85,19 @@ function connect() {
         try {
             data = JSON.parse(event.data);
 
+            // 检查是否正在生成中，如果是则拦截用户消息并发送提示
+            if ((data.type === 'user_message' || data.type === 'user_image') && isStreamingMode) {
+                console.log('[Telegram Bridge] 检测到正在生成中，拦截用户消息');
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'info_message',
+                        chatId: data.chatId,
+                        text: '⚠️ AI正在生成回复中，请等待当前回复完成后再发送新消息。'
+                    }));
+                }
+                return; // 直接返回，不处理这条消息
+            }
+
             // --- 用户图片处理 ---
             if (data.type === 'user_image') {
                 console.log('[Telegram Bridge] 收到用户图片，发送给AI...', data);
