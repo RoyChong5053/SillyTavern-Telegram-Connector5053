@@ -67,6 +67,12 @@
 4. **优化性能** - 确保大规模使用时的可靠性
 5. **加强安全性** - 为生产环境做准备
 
+## Telegram集成状态
+- ✅ 项目Telegram服务器功能正常（已测试WebSocket启动）
+- ⏳ Hermes Agent Telegram集成待配置
+- 📋 需要设置TELEGRAM_BOT_TOKEN和TELEGRAM_CHAT_ID环境变量
+- 🔧 cron任务已更新，当Telegram可用时会自动发送报告
+
 ## 监控指标
 - WebSocket连接成功率
 - 消息处理延迟
