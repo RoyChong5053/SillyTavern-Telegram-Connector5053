@@ -815,12 +815,22 @@ bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
     const username = msg.from.username || 'N/A';
+    
+    // 检查是否是群聊消息且@了bot
+    const isGroupChat = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
+    const botUsername = config.botUsername || (await bot.getMe()).username;
+    const text = msg.text || '';
+    
+    // 如果是群聊消息且没有@bot，则忽略
+    if (isGroupChat && !text.includes(`@${botUsername}`)) {
+        return;
+    }
 
     // 检查白名单是否已配置且不为空
     if (config.allowedUserIds && config.allowedUserIds.length > 0) {
         // 如果当前用户的ID不在白名单中
         if (!config.allowedUserIds.includes(userId)) {
-            logWithTimestamp('log', `拒绝了来自非白名单用户的访问：\n  - User ID: ${userId}\n  - Username: @${username}\n  - Chat ID: ${chatId}\n  - Message: "${msg.text || '[图片消息]'}"`);
+            logWithTimestamp('log', `拒绝了来自非白名单用户的访问：\n  - User ID: ${userId}\n  - Username: @${username}\n  - Chat ID: ${chatId}\n  - Message: "${text || '[图片消息]'}"`);
             // 向该用户发送一条拒绝消息
             bot.sendMessage(chatId, '抱歉，您无权使用此机器人。').catch(err => {
                 logWithTimestamp('error', `向 ${chatId} 发送拒绝消息失败:`, err.message);
@@ -864,11 +874,20 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    const text = msg.text;
-    if (!text) return;
+    // 移除文本消息中的@bot提及（如果是群聊）
+    let processedText = text;
+    if (isGroupChat && botUsername) {
+        processedText = text.replace(new RegExp(`@${botUsername}\\s*`, 'g'), '').trim();
+        
+        // 如果处理后为空字符串，则忽略
+        if (!processedText) {
+            return;
+        }
+    }
+    if (!processedText) return;
 
-    if (text.startsWith('/')) {
-        const parts = text.slice(1).trim().split(/\s+/);
+    if (processedText.startsWith('/')) {
+        const parts = processedText.slice(1).trim().split(/\s+/);
         const command = parts[0].toLowerCase();
         const args = parts.slice(1);
 
@@ -885,8 +904,8 @@ bot.on('message', async (msg) => {
 
     // 处理普通文本消息
     if (sillyTavernClient && sillyTavernClient.readyState === WebSocket.OPEN) {
-        logWithTimestamp('log', `从Telegram用户 ${chatId} 收到消息: "${text}"`);
-        const payload = JSON.stringify({ type: 'user_message', chatId, text });
+        logWithTimestamp('log', `从Telegram用户 ${chatId} 收到消息: "${processedText}"`);
+        const payload = JSON.stringify({ type: 'user_message', chatId, text: processedText });
         sillyTavernClient.send(payload);
     } else {
         logWithTimestamp('warn', '收到Telegram消息，但SillyTavern扩展未连接。');
