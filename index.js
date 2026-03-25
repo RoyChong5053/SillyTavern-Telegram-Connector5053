@@ -510,56 +510,101 @@ function handleFinalMessage(lastMessageIdInChatArray) {
     const lastMessageIndex = lastMessageIdInChatArray - 1;
     if (lastMessageIndex < 0) return;
 
-    // 延迟以确保DOM更新完成
+    // 使用MutationObserver等待DOM更新完成，避免硬编码延迟
+    observeDOMForMessageUpdate(lastMessageIndex);
+}
+
+// 使用MutationObserver观察DOM更新，替代硬编码setTimeout
+function observeDOMForMessageUpdate(messageIndex) {
+    const targetSelector = `#chat .mes[mesid="${messageIndex}"]`;
+    const messageElement = $(targetSelector);
+    
+    if (messageElement.length > 0) {
+        // 元素已存在，立即处理
+        processMessageElement(messageElement, messageIndex);
+        return;
+    }
+
+    // 元素不存在，设置MutationObserver等待DOM更新
+    const observer = new MutationObserver((mutations, obs) => {
+        const element = $(targetSelector);
+        if (element.length > 0) {
+            obs.disconnect();
+            processMessageElement(element, messageIndex);
+        }
+    });
+
+    // 观察整个chat容器
+    observer.observe(document.getElementById('chat') || document.body, {
+        childList: true,
+        subtree: true,
+        attributes: false,
+        characterData: false
+    });
+
+    // 设置超时作为fallback（10秒，比原来的500ms更保守）
     setTimeout(() => {
-        // 直接调用全局的 SillyTavern.getContext()
-        const context = SillyTavern.getContext();
-        const lastMessage = context.chat[lastMessageIndex];
+        observer.disconnect();
+        const element = $(targetSelector);
+        if (element.length > 0) {
+            processMessageElement(element, messageIndex);
+        } else {
+            console.log('[Telegram Bridge] 超时: 无法找到消息元素 mesid="' + messageIndex + '"');
+            lastProcessedChatId = null;
+        }
+    }, 10000);
+}
 
-        // 确认这是我们刚刚通过Telegram触发的AI回复
-        if (lastMessage && !lastMessage.is_user && !lastMessage.is_system) {
-            // === 新增：检查是否为图片消息 ===
-            // SillyTavern 图片消息通常包含 image_url 或 image_base64 字段
-            if (lastMessage.image_url || lastMessage.image_base64 || lastMessage.image) {
-                console.log('[Telegram Bridge] 检测到图片回复，跳过文本处理（图片已通过单独事件发送）');
-                lastProcessedChatId = null;
-                return;
+// 处理消息元素的通用函数
+function processMessageElement(messageElement, messageIndex) {
+    // 直接调用全局的 SillyTavern.getContext()
+    const context = SillyTavern.getContext();
+    const lastMessage = context.chat[messageIndex];
+
+    // 确认这是我们刚刚通过Telegram触发的AI回复
+    if (lastMessage && !lastMessage.is_user && !lastMessage.is_system) {
+        // === 新增：检查是否为图片消息 ===
+        // SillyTavern 图片消息通常包含 image_url 或 image_base64 字段
+        if (lastMessage.image_url || lastMessage.image_base64 || lastMessage.image) {
+            console.log('[Telegram Bridge] 检测到图片回复，跳过文本处理（图片已通过单独事件发送）');
+            lastProcessedChatId = null;
+            return;
+        }
+        // === 结束新增 ===
+        
+        // 获取消息文本元素
+        const messageTextElement = messageElement.find('.mes_text');
+
+        if (messageTextElement.length > 0) {
+            // 获取HTML内容并替换<br>和</p><p>为换行符
+            let renderedText = messageTextElement.html()
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/p>\s*<p>/gi, '\n\n');
+
+            // 解码HTML实体
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = renderedText;
+            renderedText = tempDiv.textContent;
+
+            console.log(`[Telegram Bridge] 捕获到最终渲染文本，准备发送更新到 chatId: ${lastProcessedChatId}`);
+
+            // 判断是流式还是非流式响应
+            if (renderedText.trim() !== lastStreamedText.trim()) {
+                console.log('[Telegram Bridge] 检测到非流式响应差异，发送最终更新');
+                sendMessageUpdate(lastProcessedChatId, renderedText);
             }
-            // === 结束新增 ===
-            
-            const messageElement = $(`#chat .mes[mesid="${lastMessageIndex}"]`);
 
-            if (messageElement.length > 0) {
-                // 获取消息文本元素
-                const messageTextElement = messageElement.find('.mes_text');
-
-                // 获取HTML内容并替换<br>和</p><p>为换行符
-                let renderedText = messageTextElement.html()
-                    .replace(/<br\s*\/?>/gi, '\n')
-                    .replace(/<\/p>\s*<p>/gi, '\n\n')
-                // .replace(/<[^>]*>/g, ''); // 移除所有其他HTML标签
-
-                // 解码HTML实体
-                const tempDiv = document.createElement('div');
-                tempDiv.innerHTML = renderedText;
-                renderedText = tempDiv.textContent;
-
-                console.log(`[Telegram Bridge] 捕获到最终渲染文本，准备发送更新到 chatId: ${lastProcessedChatId}`);
-
-                // 判断是流式还是非流式响应
-                if (isStreamingMode) {
-                    // 流式响应 - 发送final_message_update
-                    ws.send(JSON.stringify({
-                        type: 'final_message_update',
-                        chatId: lastProcessedChatId,
-                        text: renderedText,
-                    }));
-                    // 重置流式模式标志
-                    isStreamingMode = false;
-                } else {
-                    // 非流式响应 - 直接发送ai_reply
-                    ws.send(JSON.stringify({
-                        type: 'ai_reply',
+            lastProcessedChatId = null;
+            lastStreamedText = '';
+        } else {
+            console.log('[Telegram Bridge] 警告: 消息元素缺少 .mes_text 内容');
+            lastProcessedChatId = null;
+        }
+    } else {
+        console.log('[Telegram Bridge] 警告: 上下文消息不匹配或不是AI回复');
+        lastProcessedChatId = null;
+    }
+}
                         chatId: lastProcessedChatId,
                         text: renderedText,
                     }));
