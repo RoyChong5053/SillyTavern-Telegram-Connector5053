@@ -521,6 +521,30 @@ wss.on('connection', ws => {
     logWithTimestamp('log', 'SillyTavern扩展已连接！');
     sillyTavernClient = ws;
 
+    // WebSocket心跳检测 - 每30秒发送一次ping，如果60秒内无响应则断开连接
+    let heartbeatInterval;
+    let isAlive = true;
+    
+    const heartbeat = () => {
+        isAlive = false;
+        ws.ping();
+        // 设置超时检查
+        setTimeout(() => {
+            if (!isAlive) {
+                logWithTimestamp('warn', 'WebSocket心跳超时，强制断开连接');
+                ws.terminate();
+            }
+        }, 30000); // 30秒超时
+    };
+    
+    // 启动心跳检测
+    heartbeatInterval = setInterval(heartbeat, 30000); // 每30秒检测一次
+    
+    ws.on('pong', () => {
+        isAlive = true;
+        logWithTimestamp('log', 'WebSocket心跳响应正常');
+    });
+
     ws.on('message', async (message) => { // 将整个回调设为async
         let data; // 在 try 块外部声明 data
         try {
@@ -705,6 +729,10 @@ wss.on('connection', ws => {
 
     ws.on('close', () => {
         logWithTimestamp('log', 'SillyTavern扩展已断开连接。');
+        // 清理心跳检测定时器
+        if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+        }
         if (ws.commandToExecuteOnClose) {
             const { command, chatId } = ws.commandToExecuteOnClose;
             logWithTimestamp('log', `客户端断开连接，现在执行预定命令: ${command}`);
@@ -718,6 +746,10 @@ wss.on('connection', ws => {
 
     ws.on('error', (error) => {
         logWithTimestamp('error', 'WebSocket发生错误:', error);
+        // 清理心跳检测定时器
+        if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+        }
         if (sillyTavernClient) {
             sillyTavernClient.commandToExecuteOnClose = null; // 清除标记，防止意外执行
         }
