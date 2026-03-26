@@ -35,6 +35,13 @@ let lastProcessedChatId = null; // 用于存储最后处理过的Telegram chatId
 // 添加一个全局变量来跟踪当前是否处于流式模式
 let isStreamingMode = false;
 
+// 自动重连相关变量
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const RECONNECT_DELAY_BASE = 1000; // 1秒
+const RECONNECT_DELAY_MAX = 30000; // 30秒
+let reconnectTimer = null;
+
 // --- 工具函数 ---
 function getSettings() {
     if (!extensionSettings[MODULE_NAME]) {
@@ -58,6 +65,12 @@ function reloadPage() {
 
 // 连接到WebSocket服务器
 function connect() {
+    // 清除任何现有的重连定时器
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    
     if (ws && ws.readyState === WebSocket.OPEN) {
         console.log('[Telegram Bridge] 已连接');
         return;
@@ -77,6 +90,8 @@ function connect() {
     ws.onopen = () => {
         console.log('[Telegram Bridge] 连接成功！');
         updateStatus('已连接', 'green');
+        // 重置重连计数器
+        reconnectAttempts = 0;
     };
 
     // 定义消息处理函数
@@ -453,16 +468,24 @@ function connect() {
         messageHandler(event);
     };
 
-    ws.onclose = () => {
-        console.log('[Telegram Bridge] 连接已关闭。');
+    ws.onclose = (event) => {
+        console.log('[Telegram Bridge] 连接已关闭。', event.code, event.reason);
         updateStatus('连接已断开', 'red');
         ws = null;
+        
+        // 如果不是正常关闭，则尝试自动重连
+        if (event.code !== 1000 && event.code !== 1001) { // 1000=正常关闭, 1001=离开
+            scheduleReconnect();
+        }
     };
 
     ws.onerror = (error) => {
         console.error('[Telegram Bridge] WebSocket 错误：', error);
         updateStatus('连接错误', 'red');
         ws = null;
+        
+        // WebSocket错误时也尝试重连
+        scheduleReconnect();
     };
 }
 
@@ -470,6 +493,43 @@ function disconnect() {
     if (ws) {
         ws.close();
     }
+    // 清除重连定时器
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    reconnectAttempts = 0;
+}
+
+// 自动重连调度函数
+function scheduleReconnect() {
+    const settings = getSettings();
+    if (!settings.autoConnect) {
+        console.log('[Telegram Bridge] 自动连接已禁用，不进行重连');
+        return;
+    }
+    
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.log('[Telegram Bridge] 已达到最大重连尝试次数，停止重连');
+        updateStatus('重连失败', 'red');
+        return;
+    }
+    
+    reconnectAttempts++;
+    
+    // 指数退避算法计算重连延迟
+    const delay = Math.min(
+        RECONNECT_DELAY_BASE * Math.pow(2, reconnectAttempts - 1),
+        RECONNECT_DELAY_MAX
+    );
+    
+    console.log(`[Telegram Bridge] 将在 ${delay}ms 后尝试第 ${reconnectAttempts} 次重连`);
+    updateStatus(`重连中 (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, 'orange');
+    
+    reconnectTimer = setTimeout(() => {
+        console.log('[Telegram Bridge] 尝试自动重连...');
+        connect();
+    }, delay);
 }
 
 // 扩展加载时执行的函数
