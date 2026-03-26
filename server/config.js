@@ -18,5 +18,10 @@ module.exports = {
     
     // Bot用户名（用于群聊@识别，通常自动获取，可手动设置）
     // 示例: 'your_bot_username' (不带@符号)
-    botUsername: null
+    botUsername: null,
+    
+    // 消息格式设置
+    // 'markdown' - Markdown格式 (默认)
+    // 'html' - HTML格式 (支持更好的格式化)
+    messageFormat: 'html'
 };

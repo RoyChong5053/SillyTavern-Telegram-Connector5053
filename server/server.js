@@ -6,6 +6,9 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 
+// Markdown到HTML转换工具
+const { convertToTelegramHtml } = require('./markdownToHtml');
+
 // 添加日志记录函数，带有时间戳
 function logWithTimestamp(level, ...args) {
     const now = new Date();
@@ -418,8 +421,19 @@ async function handleTelegramCommand(command, args, chatId) {
         replyText += `帮助\n`;
         replyText += `/help - 显示此帮助信息。`;
 
+        // 帮助信息也使用HTML格式
+        let messageText = replyText;
+        let parseMode = undefined;
+        
+        if (config.messageFormat === 'html') {
+            messageText = convertToTelegramHtml(replyText);
+            parseMode = 'HTML';
+        }
+        
         // 发送帮助信息并返回
-        bot.sendMessage(chatId, replyText).catch(err => {
+        bot.sendMessage(chatId, messageText, {
+            parse_mode: parseMode
+        }).catch(err => {
             logWithTimestamp('error', `发送命令回复失败: ${err.message}`);
         });
         return;
@@ -427,7 +441,17 @@ async function handleTelegramCommand(command, args, chatId) {
 
     // 检查SillyTavern是否连接
     if (!sillyTavernClient || sillyTavernClient.readyState !== WebSocket.OPEN) {
-        bot.sendMessage(chatId, 'SillyTavern未连接，无法执行角色和聊天相关命令。请先确保SillyTavern已打开并启用了Telegram扩展。');
+        let messageText = 'SillyTavern未连接，无法执行角色和聊天相关命令。请先确保SillyTavern已打开并启用了Telegram扩展。';
+        let parseMode = undefined;
+        
+        if (config.messageFormat === 'html') {
+            messageText = convertToTelegramHtml(messageText);
+            parseMode = 'HTML';
+        }
+        
+        bot.sendMessage(chatId, messageText, {
+            parse_mode: parseMode
+        });
         return;
     }
 
@@ -510,8 +534,19 @@ async function handleTelegramCommand(command, args, chatId) {
             }
     }
 
+    // 命令回复也使用HTML格式
+    let messageText = replyText;
+    let parseMode = undefined;
+    
+    if (config.messageFormat === 'html') {
+        messageText = convertToTelegramHtml(replyText);
+        parseMode = 'HTML';
+    }
+    
     // 发送回复
-    bot.sendMessage(chatId, replyText).catch(err => {
+    bot.sendMessage(chatId, messageText, {
+        parse_mode: parseMode
+    }).catch(err => {
         logWithTimestamp('error', `发送命令回复失败: ${err.message}`);
     });
 }
@@ -596,9 +631,19 @@ wss.on('connection', ws => {
                             const currentMessageId = await currentSession.messagePromise;
                             if (currentMessageId) {
                                 currentSession.isEditing = true;
-                                bot.editMessageText(currentSession.lastText + ' ...', {
+                                // 流式更新消息也使用HTML格式
+                                let messageText = currentSession.lastText + ' ...';
+                                let parseMode = undefined;
+                                
+                                if (config.messageFormat === 'html') {
+                                    messageText = convertToTelegramHtml(currentSession.lastText + ' ...');
+                                    parseMode = 'HTML';
+                                }
+                                
+                                bot.editMessageText(messageText, {
                                     chat_id: data.chatId,
                                     message_id: currentMessageId,
+                                    parse_mode: parseMode
                                 }).catch(err => {
                                     if (!err.message.includes('message is not modified'))
                                         logWithTimestamp('error', '编辑Telegram消息失败:', err.message);
@@ -629,7 +674,17 @@ wss.on('connection', ws => {
                 else {
                     logWithTimestamp('warn', `收到流式结束信号，但找不到对应的会话 ChatID ${data.chatId}`);
                     // 为安全起见，我们仍然发送消息，但这种情况不应该发生
-                    await bot.sendMessage(data.chatId, data.text || "消息生成完成").catch(err => {
+                    let messageText = data.text || "消息生成完成";
+                    let parseMode = undefined;
+                    
+                    if (config.messageFormat === 'html') {
+                        messageText = convertToTelegramHtml(data.text || "消息生成完成");
+                        parseMode = 'HTML';
+                    }
+                    
+                    await bot.sendMessage(data.chatId, messageText, {
+                        parse_mode: parseMode
+                    }).catch(err => {
                         logWithTimestamp('error', '发送流式结束消息失败:', err.message);
                     });
                 }
@@ -646,11 +701,20 @@ wss.on('connection', ws => {
                     const messageId = await session.messagePromise;
                     if (messageId) {
                         logWithTimestamp('log', `收到流式最终渲染文本，更新消息 ${messageId}`);
-                        await bot.editMessageText(data.text, {
+                        
+                        // 根据配置选择消息格式
+                        let messageText = data.text;
+                        let parseMode = undefined;
+                        
+                        if (config.messageFormat === 'html') {
+                            messageText = convertToTelegramHtml(data.text);
+                            parseMode = 'HTML';
+                        }
+                        
+                        await bot.editMessageText(messageText, {
                             chat_id: data.chatId,
                             message_id: messageId,
-                            // 可选：在这里指定 parse_mode: 'MarkdownV2' 或 'HTML'
-                            // parse_mode: 'HTML',
+                            parse_mode: parseMode
                         }).catch(err => {
                             if (!err.message.includes('message is not modified'))
                                 logWithTimestamp('error', '编辑最终格式化Telegram消息失败:', err.message);
@@ -668,8 +732,18 @@ wss.on('connection', ws => {
                 // 但为了健壮性，我们仍然保留这个处理
                 else {
                     logWithTimestamp('log', `收到非流式完整回复，直接发送新消息到 ChatID ${data.chatId}`);
-                    await bot.sendMessage(data.chatId, data.text, {
-                        // 可选：在这里指定 parse_mode
+                    
+                    // 根据配置选择消息格式
+                    let messageText = data.text;
+                    let parseMode = undefined;
+                    
+                    if (config.messageFormat === 'html') {
+                        messageText = convertToTelegramHtml(data.text);
+                        parseMode = 'HTML';
+                    }
+                    
+                    await bot.sendMessage(data.chatId, messageText, {
+                        parse_mode: parseMode
                     }).catch(err => {
                         logWithTimestamp('error', '发送非流式完整回复失败:', err.message);
                     });
@@ -680,7 +754,19 @@ wss.on('connection', ws => {
             // --- 其他消息处理逻辑 ---
             if (data.type === 'error_message' && data.chatId) {
                 logWithTimestamp('error', `收到SillyTavern的错误报告，将发送至Telegram用户 ${data.chatId}: ${data.text}`);
-                bot.sendMessage(data.chatId, data.text);
+                
+                // 错误消息也使用HTML格式（如果需要）
+                let messageText = data.text;
+                let parseMode = undefined;
+                
+                if (config.messageFormat === 'html') {
+                    messageText = convertToTelegramHtml(data.text);
+                    parseMode = 'HTML';
+                }
+                
+                bot.sendMessage(data.chatId, messageText, {
+                    parse_mode: parseMode
+                });
             } else if (data.type === 'ai_reply' && data.chatId) {
                 logWithTimestamp('log', `收到非流式AI回复，发送至Telegram用户 ${data.chatId}`);
                 // 确保在发送消息前清理可能存在的流式会话
@@ -688,8 +774,19 @@ wss.on('connection', ws => {
                     logWithTimestamp('log', `清理 ChatID ${data.chatId} 的流式会话，因为收到了非流式回复`);
                     ongoingStreams.delete(data.chatId);
                 }
+                // 根据配置选择消息格式
+                let messageText = data.text;
+                let parseMode = undefined;
+                
+                if (config.messageFormat === 'html') {
+                    messageText = convertToTelegramHtml(data.text);
+                    parseMode = 'HTML';
+                }
+                
                 // 发送非流式回复
-                await bot.sendMessage(data.chatId, data.text).catch(err => {
+                await bot.sendMessage(data.chatId, messageText, {
+                    parse_mode: parseMode
+                }).catch(err => {
                     logWithTimestamp('error', `发送非流式AI回复失败: ${err.message}`);
                 });
             } else if (data.type === 'typing_action' && data.chatId) {
