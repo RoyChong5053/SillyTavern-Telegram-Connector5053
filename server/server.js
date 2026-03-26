@@ -3,11 +3,6 @@ const TelegramBot = require('node-telegram-bot-api');
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
-const http = require('http');
-
-// Markdown到HTML转换工具
-const { convertToTelegramHtml } = require('./markdownToHtml');
 
 // 添加日志记录函数，带有时间戳
 function logWithTimestamp(level, ...args) {
@@ -40,10 +35,6 @@ function logWithTimestamp(level, ...args) {
 const RESTART_PROTECTION_FILE = path.join(__dirname, '.restart_protection');
 const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 60000; // 1分钟
-
-// 输入中状态管理
-const TYPING_INTERVAL_MS = 4000; // Telegram typing状态有效期为5秒，我们每4秒刷新一次
-const TYPING_CLEANUP_INTERVAL_MS = 10000; // 10秒无活动自动清理typing状态
 
 // 检查是否可能处于循环重启状态
 function checkRestartProtection() {
@@ -94,121 +85,8 @@ function checkRestartProtection() {
     }
 }
 
-// 智能消息编辑辅助函数
-function shouldTriggerEdit(oldText, newText) {
-    if (!oldText || !newText) return true;
-    
-    // 如果文本完全相同，不需要编辑
-    if (oldText === newText) return false;
-    
-    // 计算文本相似度
-    const similarity = calculateTextSimilarity(oldText, newText);
-    
-    // 如果相似度很高（小改动），减少编辑频率
-    if (similarity > 0.95) {
-        // 小改动：只有当字符数变化超过一定阈值时才编辑
-        const lengthDiff = Math.abs(newText.length - oldText.length);
-        return lengthDiff > 5; // 至少5个字符的变化
-    }
-    
-    // 中等或大幅变化：总是编辑
-    return true;
-}
-
-function calculateTextSimilarity(text1, text2) {
-    // 简单的文本相似度计算（基于最长公共子序列比例）
-    const longer = text1.length > text2.length ? text1 : text2;
-    const shorter = text1.length > text2.length ? text2 : text1;
-    
-    if (longer.length === 0) return 1.0;
-    
-    // 计算编辑距离（简化版）
-    let commonChars = 0;
-    for (let i = 0; i < Math.min(longer.length, shorter.length); i++) {
-        if (longer[i] === shorter[i]) {
-            commonChars++;
-        }
-    }
-    
-    return commonChars / longer.length;
-}
-
-function calculateEditDelay(textLength) {
-    // 动态计算编辑延迟：文本越长，延迟越短（更快更新）
-    if (textLength <= 50) return 3000; // 短文本：3秒延迟
-    if (textLength <= 200) return 2000; // 中等文本：2秒延迟
-    return 1000; // 长文本：1秒延迟（用户期望更快更新）
-}
-
-// 输入中状态管理函数
-function startTyping(chatId) {
-    const session = ongoingStreams.get(chatId);
-    if (!session) return;
-    
-    // 清除现有的定时器
-    if (session.typingTimer) {
-        clearInterval(session.typingTimer);
-    }
-    
-    // 立即发送一次输入中状态
-    bot.sendChatAction(chatId, 'typing').catch(error =>
-        logWithTimestamp('error', '发送"输入中"状态失败:', error));
-    session.lastTypingTime = Date.now();
-    
-    // 设置定时器持续发送输入中状态
-    session.typingTimer = setInterval(() => {
-        // 检查会话是否还存在
-        if (!ongoingStreams.has(chatId)) {
-            clearInterval(session.typingTimer);
-            return;
-        }
-        
-        bot.sendChatAction(chatId, 'typing').catch(error =>
-            logWithTimestamp('error', '发送"输入中"状态失败:', error));
-        session.lastTypingTime = Date.now();
-    }, TYPING_INTERVAL_MS);
-}
-
-function stopTyping(chatId) {
-    const session = ongoingStreams.get(chatId);
-    if (session && session.typingTimer) {
-        clearInterval(session.typingTimer);
-        session.typingTimer = null;
-    }
-}
-
-// 检查是否应该发送特定类型的通知到Telegram（基于消息内容）
-function shouldSendNotification(messageText) {
-    // 基于消息内容判断通知类型
-    if (messageText.includes('连接') || messageText.includes('断开') || messageText.includes('重连')) {
-        return notificationSettings.enableConnectionNotifications;
-    }
-    if (messageText.includes('生成') || messageText.includes('思考') || messageText.includes('等待')) {
-        return notificationSettings.enableGenerationNotifications;
-    }
-    if (messageText.includes('错误') || messageText.includes('失败') || messageText.includes('抱歉')) {
-        return notificationSettings.enableErrorNotifications;
-    }
-    
-    // 默认发送所有通知
-    return true;
-}
-
-// 自动清理长时间无活动的输入中状态
-setInterval(() => {
-    const now = Date.now();
-    for (const [chatId, session] of ongoingStreams.entries()) {
-        if (session.typingTimer && now - session.lastTypingTime > TYPING_CLEANUP_INTERVAL_MS) {
-            logWithTimestamp('warn', `自动清理ChatID ${chatId}的长时间无活动输入中状态`);
-            stopTyping(chatId);
-        }
-    }
-}, TYPING_CLEANUP_INTERVAL_MS);
-
-// 启动时检查重启保护（仅在设置了重启标记时）
-if (process.env.TELEGRAM_CLEAR_UPDATES === '1') {
-    checkRestartProtection();
-}
+// 启动时检查重启保护
+checkRestartProtection();
 
 // 检查配置文件是否存在
 const configPath = path.join(__dirname, './config.js');
@@ -236,6 +114,63 @@ if (token === 'TOKEN' || token === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
 // 初始化Telegram Bot，但不立即启动轮询
 const bot = new TelegramBot(token, { polling: false });
 logWithTimestamp('log', '正在初始化Telegram Bot...');
+
+// 辅助函数：将文件转换为 base64
+function fileToBase64(filePath) {
+    return new Promise((resolve, reject) => {
+        fs.readFile(filePath, (err, data) => {
+            if (err) {
+                reject(err);
+                return;
+            }
+            resolve(data.toString('base64'));
+        });
+    });
+}
+
+// 处理带图片的消息
+async function handleMessageWithPhoto(msg, chatId, text) {
+    if (!msg.photo || msg.photo.length === 0) {
+        return null;
+    }
+
+    logWithTimestamp('log', `收到来自 ChatID ${chatId} 的图片消息`);
+
+    // 获取最大尺寸的图片（数组中最后一个）
+    const photo = msg.photo[msg.photo.length - 1];
+    const fileId = photo.file_id;
+
+    try {
+        // 获取文件信息
+        const file = await bot.getFile(fileId);
+
+        // 下载文件到临时目录
+        const tempDir = path.join(__dirname, 'temp');
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
+        }
+
+        const downloadedPath = await bot.downloadFile(fileId, tempDir);
+
+        // 读取并转为 base64
+        const base64 = await fileToBase64(downloadedPath);
+        const ext = path.extname(file.file_path || '').toLowerCase();
+        const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
+
+        // 清理临时文件
+        fs.unlinkSync(downloadedPath);
+
+        return {
+            type: 'image',
+            data: `data:${mimeType};base64,${base64}`,
+            mimeType: mimeType
+        };
+    } catch (error) {
+        logWithTimestamp('error', '处理图片消息失败:', error);
+    }
+
+    return null;
+}
 
 // 手动清除所有未处理的消息，然后启动轮询
 (async function clearAndStartPolling() {
@@ -301,34 +236,8 @@ logWithTimestamp('log', `WebSocket服务器正在监听端口 ${wssPort}...`);
 let sillyTavernClient = null; // 用于存储连接的SillyTavern扩展客户端
 
 // 用于存储正在进行的流式会话，调整会话结构，使用Promise来处理messageId
-// 结构: { messagePromise: Promise<number> | null, lastText: String, timer: NodeJS.Timeout | null, isEditing: boolean, lastActivity: number }
+// 结构: { messagePromise: Promise<number> | null, lastText: String, timer: NodeJS.Timeout | null, isEditing: boolean }
 const ongoingStreams = new Map();
-
-// 通知设置 - 控制不同类型的通知是否发送到Telegram
-const notificationSettings = {
-    enableConnectionNotifications: true, // 连接状态通知
-    enableGenerationNotifications: true, // 生成状态通知  
-    enableErrorNotifications: true,      // 错误通知
-};
-
-// 定期清理过期的流式会话（防止状态残留）
-function cleanupExpiredSessions() {
-    const now = Date.now();
-    const expiredThreshold = 5 * 60 * 1000; // 5分钟无活动视为过期
-    
-    for (const [chatId, session] of ongoingStreams.entries()) {
-        if (now - session.lastActivity > expiredThreshold) {
-            logWithTimestamp('log', `清理过期会话 ChatID ${chatId} (最后活动: ${new Date(session.lastActivity).toLocaleTimeString()})`);
-            if (session.timer) {
-                clearTimeout(session.timer);
-            }
-            ongoingStreams.delete(chatId);
-        }
-    }
-}
-
-// 每30秒清理一次过期会话
-setInterval(cleanupExpiredSessions, 30000);
 
 // 重载服务器函数
 function reloadServer(chatId) {
@@ -355,17 +264,6 @@ function reloadServer(chatId) {
 // 重启服务器函数
 function restartServer(chatId) {
     logWithTimestamp('log', '重启服务器端组件...');
-
-    // 清理重启保护文件，防止误判为循环重启
-    try {
-        if (fs.existsSync(RESTART_PROTECTION_FILE)) {
-            fs.unlinkSync(RESTART_PROTECTION_FILE);
-            logWithTimestamp('log', '已清理重启保护文件，防止循环重启误判');
-        }
-    } catch (error) {
-        logWithTimestamp('error', '清理重启保护文件失败:', error);
-        // 即使清理失败也继续重启过程
-    }
 
     // 首先停止Telegram Bot轮询
     bot.stopPolling().then(() => {
@@ -409,18 +307,6 @@ function restartServer(chatId) {
         }
     }).catch(err => {
         logWithTimestamp('error', '停止Telegram Bot轮询时出错:', err);
-        
-        // 清理重启保护文件，防止误判为循环重启
-        try {
-            if (fs.existsSync(RESTART_PROTECTION_FILE)) {
-                fs.unlinkSync(RESTART_PROTECTION_FILE);
-                logWithTimestamp('log', '已清理重启保护文件，防止循环重启误判');
-            }
-        } catch (error) {
-            logWithTimestamp('error', '清理重启保护文件失败:', error);
-            // 即使清理失败也继续重启过程
-        }
-        
         // 即使出错也继续重启过程
         if (wss) {
             wss.close(() => {
@@ -541,13 +427,6 @@ function handleSystemCommand(command, chatId) {
                 exitServer();
             }
             break;
-        case 'clearcache':
-            responseMessage = '正在清理缓存状态...';
-            // 清理所有缓存状态
-            if (sillyTavernClient && sillyTavernClient.readyState === WebSocket.OPEN) {
-                sillyTavernClient.send(JSON.stringify({ type: 'clear_all_cache' }));
-            }
-            break;
         default:
             logWithTimestamp('warn', `未知的系统命令: ${command}`);
             bot.sendMessage(chatId, `未知的系统命令: /${command}`);
@@ -588,24 +467,12 @@ async function handleTelegramCommand(command, args, chatId) {
         replyText += `/reload - 重载插件的服务器端组件并刷新ST网页。\n`;
         replyText += `/restart - 刷新ST网页并重启插件的服务器端组件。\n`;
         replyText += `/exit - 退出插件的服务器端组件。\n`;
-        replyText += `/ping - 检查连接状态。\n`;
-        replyText += `/clearcache - 清理缓存状态。\n\n`;
+        replyText += `/ping - 检查连接状态。\n\n`;
         replyText += `帮助\n`;
         replyText += `/help - 显示此帮助信息。`;
 
-        // 帮助信息也使用HTML格式
-        let messageText = replyText;
-        let parseMode = undefined;
-        
-        if (config.messageFormat === 'html') {
-            messageText = convertToTelegramHtml(replyText);
-            parseMode = 'HTML';
-        }
-        
         // 发送帮助信息并返回
-        bot.sendMessage(chatId, messageText, {
-            parse_mode: parseMode
-        }).catch(err => {
+        bot.sendMessage(chatId, replyText).catch(err => {
             logWithTimestamp('error', `发送命令回复失败: ${err.message}`);
         });
         return;
@@ -613,17 +480,7 @@ async function handleTelegramCommand(command, args, chatId) {
 
     // 检查SillyTavern是否连接
     if (!sillyTavernClient || sillyTavernClient.readyState !== WebSocket.OPEN) {
-        let messageText = 'SillyTavern未连接，无法执行角色和聊天相关命令。请先确保SillyTavern已打开并启用了Telegram扩展。';
-        let parseMode = undefined;
-        
-        if (config.messageFormat === 'html') {
-            messageText = convertToTelegramHtml(messageText);
-            parseMode = 'HTML';
-        }
-        
-        bot.sendMessage(chatId, messageText, {
-            parse_mode: parseMode
-        });
+        bot.sendMessage(chatId, 'SillyTavern未连接，无法执行角色和聊天相关命令。请先确保SillyTavern已打开并启用了Telegram扩展。');
         return;
     }
 
@@ -649,12 +506,6 @@ async function handleTelegramCommand(command, args, chatId) {
             if (args.length === 0) {
                 replyText = '请提供角色名称或序号。用法: /switchchar <角色名称> 或 /switchchar_数字';
             } else {
-                // 清理缓存状态（角色切换时）
-                sillyTavernClient.send(JSON.stringify({
-                    type: 'clear_cache',
-                    chatId: chatId
-                }));
-                
                 // 发送命令到前端执行
                 sillyTavernClient.send(JSON.stringify({
                     type: 'execute_command',
@@ -677,12 +528,6 @@ async function handleTelegramCommand(command, args, chatId) {
             if (args.length === 0) {
                 replyText = '请提供聊天记录名称。用法： /switchchat <聊天记录名称>';
             } else {
-                // 清理缓存状态（聊天切换时）
-                sillyTavernClient.send(JSON.stringify({
-                    type: 'clear_cache',
-                    chatId: chatId
-                }));
-                
                 // 发送命令到前端执行
                 sillyTavernClient.send(JSON.stringify({
                     type: 'execute_command',
@@ -697,12 +542,6 @@ async function handleTelegramCommand(command, args, chatId) {
             // 处理特殊格式的命令，如 switchchar_1, switchchat_2 等
             const charMatch = command.match(/^switchchar_(\d+)$/);
             if (charMatch) {
-                // 清理缓存状态（角色切换时）
-                sillyTavernClient.send(JSON.stringify({
-                    type: 'clear_cache',
-                    chatId: chatId
-                }));
-                
                 // 发送命令到前端执行
                 sillyTavernClient.send(JSON.stringify({
                     type: 'execute_command',
@@ -714,12 +553,6 @@ async function handleTelegramCommand(command, args, chatId) {
 
             const chatMatch = command.match(/^switchchat_(\d+)$/);
             if (chatMatch) {
-                // 清理缓存状态（聊天切换时）
-                sillyTavernClient.send(JSON.stringify({
-                    type: 'clear_cache',
-                    chatId: chatId
-                }));
-                
                 // 发送命令到前端执行
                 sillyTavernClient.send(JSON.stringify({
                     type: 'execute_command',
@@ -730,19 +563,8 @@ async function handleTelegramCommand(command, args, chatId) {
             }
     }
 
-    // 命令回复也使用HTML格式
-    let messageText = replyText;
-    let parseMode = undefined;
-    
-    if (config.messageFormat === 'html') {
-        messageText = convertToTelegramHtml(replyText);
-        parseMode = 'HTML';
-    }
-    
     // 发送回复
-    bot.sendMessage(chatId, messageText, {
-        parse_mode: parseMode
-    }).catch(err => {
+    bot.sendMessage(chatId, replyText).catch(err => {
         logWithTimestamp('error', `发送命令回复失败: ${err.message}`);
     });
 }
@@ -751,30 +573,6 @@ async function handleTelegramCommand(command, args, chatId) {
 wss.on('connection', ws => {
     logWithTimestamp('log', 'SillyTavern扩展已连接！');
     sillyTavernClient = ws;
-
-    // WebSocket心跳检测 - 每30秒发送一次ping，如果60秒内无响应则断开连接
-    let heartbeatInterval;
-    let isAlive = true;
-    
-    const heartbeat = () => {
-        isAlive = false;
-        ws.ping();
-        // 设置超时检查
-        setTimeout(() => {
-            if (!isAlive) {
-                logWithTimestamp('warn', 'WebSocket心跳超时，强制断开连接');
-                ws.terminate();
-            }
-        }, 30000); // 30秒超时
-    };
-    
-    // 启动心跳检测
-    heartbeatInterval = setInterval(heartbeat, 30000); // 每30秒检测一次
-    
-    ws.on('pong', () => {
-        isAlive = true;
-        logWithTimestamp('log', 'WebSocket心跳响应正常');
-    });
 
     ws.on('message', async (message) => { // 将整个回调设为async
         let data; // 在 try 块外部声明 data
@@ -798,14 +596,8 @@ wss.on('connection', ws => {
                         lastText: data.text,
                         timer: null,
                         isEditing: false, // 新增状态锁
-                        lastActivity: Date.now(), // 记录最后活动时间
-                        typingTimer: null, // 输入中状态定时器
-                        lastTypingTime: Date.now(), // 最后输入中状态更新时间
                     };
                     ongoingStreams.set(data.chatId, session);
-                    
-                    // 开始持续显示输入中状态
-                    startTyping(data.chatId);
 
                     // 异步发送第一条消息并更新 session
                     bot.sendMessage(data.chatId, '正在思考...')
@@ -814,55 +606,38 @@ wss.on('connection', ws => {
                             resolveMessagePromise(sentMessage.message_id);
                         }).catch(err => {
                             logWithTimestamp('error', '发送初始Telegram消息失败:', err);
-                            stopTyping(data.chatId);
                             ongoingStreams.delete(data.chatId); // 出错时清理
                         });
                 } else {
                     // 2. 如果会话存在，只更新最新文本
                     session.lastText = data.text;
-                    session.lastActivity = Date.now(); // 更新最后活动时间
                 }
 
-                // 3. 尝试触发一次编辑（智能节流保护）
+                // 3. 尝试触发一次编辑（节流保护）
                 // 确保 messageId 已经获取到，并且当前没有正在进行的编辑或定时器
                 // 使用 await messagePromise 来确保messageId可用
                 const messageId = await session.messagePromise;
 
                 if (messageId && !session.isEditing && !session.timer) {
-                    // 智能编辑决策：只有当文本有显著变化时才进行编辑
-                    const shouldEdit = shouldTriggerEdit(session.lastText, data.text);
-                    
-                    if (shouldEdit) {
-                        session.timer = setTimeout(async () => { // 定时器回调也设为async
-                            const currentSession = ongoingStreams.get(data.chatId);
-                            if (currentSession) {
-                                const currentMessageId = await currentSession.messagePromise;
-                                if (currentMessageId) {
-                                    currentSession.isEditing = true;
-                                    // 流式更新消息也使用HTML格式
-                                    let messageText = currentSession.lastText;
-                                    let parseMode = undefined;
-                                    
-                                    if (config.messageFormat === 'html') {
-                                        messageText = convertToTelegramHtml(currentSession.lastText);
-                                        parseMode = 'HTML';
-                                    }
-                                    
-                                    bot.editMessageText(messageText, {
-                                        chat_id: data.chatId,
-                                        message_id: currentMessageId,
-                                        parse_mode: parseMode
-                                    }).catch(err => {
-                                        if (!err.message.includes('message is not modified'))
-                                            logWithTimestamp('error', '编辑Telegram消息失败:', err.message);
-                                    }).finally(() => {
-                                        if (ongoingStreams.has(data.chatId)) ongoingStreams.get(data.chatId).isEditing = false;
-                                    });
-                                }
-                                currentSession.timer = null;
+                    session.timer = setTimeout(async () => { // 定时器回调也设为async
+                        const currentSession = ongoingStreams.get(data.chatId);
+                        if (currentSession) {
+                            const currentMessageId = await currentSession.messagePromise;
+                            if (currentMessageId) {
+                                currentSession.isEditing = true;
+                                bot.editMessageText(currentSession.lastText + ' ...', {
+                                    chat_id: data.chatId,
+                                    message_id: currentMessageId,
+                                }).catch(err => {
+                                    if (!err.message.includes('message is not modified'))
+                                        logWithTimestamp('error', '编辑Telegram消息失败:', err.message);
+                                }).finally(() => {
+                                    if (ongoingStreams.has(data.chatId)) ongoingStreams.get(data.chatId).isEditing = false;
+                                });
                             }
-                        }, calculateEditDelay(data.text.length)); // 动态延迟基于文本长度
-                    }
+                            currentSession.timer = null;
+                        }
+                    }, 2000);
                 }
                 return;
             }
@@ -883,17 +658,7 @@ wss.on('connection', ws => {
                 else {
                     logWithTimestamp('warn', `收到流式结束信号，但找不到对应的会话 ChatID ${data.chatId}`);
                     // 为安全起见，我们仍然发送消息，但这种情况不应该发生
-                    let messageText = data.text || "消息生成完成";
-                    let parseMode = undefined;
-                    
-                    if (config.messageFormat === 'html') {
-                        messageText = convertToTelegramHtml(data.text || "消息生成完成");
-                        parseMode = 'HTML';
-                    }
-                    
-                    await bot.sendMessage(data.chatId, messageText, {
-                        parse_mode: parseMode
-                    }).catch(err => {
+                    await bot.sendMessage(data.chatId, data.text || "消息生成完成").catch(err => {
                         logWithTimestamp('error', '发送流式结束消息失败:', err.message);
                     });
                 }
@@ -910,20 +675,11 @@ wss.on('connection', ws => {
                     const messageId = await session.messagePromise;
                     if (messageId) {
                         logWithTimestamp('log', `收到流式最终渲染文本，更新消息 ${messageId}`);
-                        
-                        // 根据配置选择消息格式
-                        let messageText = data.text;
-                        let parseMode = undefined;
-                        
-                        if (config.messageFormat === 'html') {
-                            messageText = convertToTelegramHtml(data.text);
-                            parseMode = 'HTML';
-                        }
-                        
-                        await bot.editMessageText(messageText, {
+                        await bot.editMessageText(data.text, {
                             chat_id: data.chatId,
                             message_id: messageId,
-                            parse_mode: parseMode
+                            // 可选：在这里指定 parse_mode: 'MarkdownV2' 或 'HTML'
+                            // parse_mode: 'HTML',
                         }).catch(err => {
                             if (!err.message.includes('message is not modified'))
                                 logWithTimestamp('error', '编辑最终格式化Telegram消息失败:', err.message);
@@ -933,7 +689,6 @@ wss.on('connection', ws => {
                         logWithTimestamp('warn', `收到final_message_update，但流式会话的messageId未能获取。`);
                     }
                     // 清理流式会话
-                    stopTyping(data.chatId);
                     ongoingStreams.delete(data.chatId);
                     logWithTimestamp('log', `ChatID ${data.chatId} 的流式会话已完成并清理。`);
                 }
@@ -942,18 +697,8 @@ wss.on('connection', ws => {
                 // 但为了健壮性，我们仍然保留这个处理
                 else {
                     logWithTimestamp('log', `收到非流式完整回复，直接发送新消息到 ChatID ${data.chatId}`);
-                    
-                    // 根据配置选择消息格式
-                    let messageText = data.text;
-                    let parseMode = undefined;
-                    
-                    if (config.messageFormat === 'html') {
-                        messageText = convertToTelegramHtml(data.text);
-                        parseMode = 'HTML';
-                    }
-                    
-                    await bot.sendMessage(data.chatId, messageText, {
-                        parse_mode: parseMode
+                    await bot.sendMessage(data.chatId, data.text, {
+                        // 可选：在这里指定 parse_mode
                     }).catch(err => {
                         logWithTimestamp('error', '发送非流式完整回复失败:', err.message);
                     });
@@ -964,61 +709,16 @@ wss.on('connection', ws => {
             // --- 其他消息处理逻辑 ---
             if (data.type === 'error_message' && data.chatId) {
                 logWithTimestamp('error', `收到SillyTavern的错误报告，将发送至Telegram用户 ${data.chatId}: ${data.text}`);
-                
-                // 错误消息也使用HTML格式（如果需要）
-                let messageText = data.text;
-                let parseMode = undefined;
-                
-                if (config.messageFormat === 'html') {
-                    messageText = convertToTelegramHtml(data.text);
-                    parseMode = 'HTML';
-                }
-                
-                bot.sendMessage(data.chatId, messageText, {
-                    parse_mode: parseMode
-                });
-            } else if (data.type === 'info_message' && data.chatId) {
-                logWithTimestamp('log', `收到信息消息，发送至Telegram用户 ${data.chatId}: ${data.text}`);
-                
-                // 信息消息也使用HTML格式（如果需要）
-                let messageText = data.text;
-                let parseMode = undefined;
-                
-                if (config.messageFormat === 'html') {
-                    messageText = convertToTelegramHtml(data.text);
-                    parseMode = 'HTML';
-                }
-                
-                // 检查是否应该发送通知（基于消息内容类型）
-                const shouldSend = shouldSendNotification(data.text);
-                if (shouldSend) {
-                    bot.sendMessage(data.chatId, messageText, {
-                        parse_mode: parseMode
-                    });
-                } else {
-                    logWithTimestamp('log', '通知设置已禁用，跳过发送信息消息');
-                }
+                bot.sendMessage(data.chatId, data.text);
             } else if (data.type === 'ai_reply' && data.chatId) {
                 logWithTimestamp('log', `收到非流式AI回复，发送至Telegram用户 ${data.chatId}`);
                 // 确保在发送消息前清理可能存在的流式会话
                 if (ongoingStreams.has(data.chatId)) {
                     logWithTimestamp('log', `清理 ChatID ${data.chatId} 的流式会话，因为收到了非流式回复`);
-                    stopTyping(data.chatId);
                     ongoingStreams.delete(data.chatId);
                 }
-                // 根据配置选择消息格式
-                let messageText = data.text;
-                let parseMode = undefined;
-                
-                if (config.messageFormat === 'html') {
-                    messageText = convertToTelegramHtml(data.text);
-                    parseMode = 'HTML';
-                }
-                
                 // 发送非流式回复
-                await bot.sendMessage(data.chatId, messageText, {
-                    parse_mode: parseMode
-                }).catch(err => {
+                await bot.sendMessage(data.chatId, data.text).catch(err => {
                     logWithTimestamp('error', `发送非流式AI回复失败: ${err.message}`);
                 });
             } else if (data.type === 'typing_action' && data.chatId) {
@@ -1031,77 +731,11 @@ wss.on('connection', ws => {
                 if (data.message) {
                     logWithTimestamp('log', `命令执行消息: ${data.message}`);
                 }
-            } else if (data.type === 'ai_image' && data.chatId) {
-                // 处理AI返回的图片
-                logWithTimestamp('log', `收到AI生成的图片，发送到Telegram用户 ${data.chatId}`);
-                try {
-                    const imageData = data.image; // 可以是 base64 data URL, URL, 或 Buffer
-                    const caption = data.caption || '';
-                    await sendImageToTelegram(data.chatId, imageData, caption);
-                } catch (error) {
-                    logWithTimestamp('error', `发送AI图片到Telegram失败:`, error.message);
-                    // 发送错误消息到用户
-                    bot.sendMessage(data.chatId, '抱歉，AI生成的图片发送失败。').catch(err => {});
-                }
-            } else if (data.type === 'user_image' && data.chatId) {
-                // 处理用户发送的图片（已在服务器端处理，这里记录）
-                logWithTimestamp('log', `收到用户图片 (chatId: ${data.chatId})，已转发到SillyTavern`);
-            } else if (data.type === 'clear_cache' && data.chatId) {
-                // 清理指定聊天ID的缓存状态
-                logWithTimestamp('log', `清理ChatID ${data.chatId} 的缓存状态`);
-                const session = ongoingStreams.get(data.chatId);
-                if (session) {
-                    // 清理定时器
-                    if (session.timer) {
-                        clearTimeout(session.timer);
-                    }
-                    // 从Map中删除会话
-                    stopTyping(data.chatId);
-                    ongoingStreams.delete(data.chatId);
-                    logWithTimestamp('log', `ChatID ${data.chatId} 的流式会话已清理`);
-                } else {
-                    logWithTimestamp('log', `ChatID ${data.chatId} 没有活跃的流式会话`);
-                }
-            } else if (data.type === 'clear_all_cache') {
-                // 清理所有缓存状态
-                logWithTimestamp('log', '清理所有缓存状态');
-                for (const [chatId, session] of ongoingStreams.entries()) {
-                    if (session.timer) {
-                        clearTimeout(session.timer);
-                    }
-                    stopTyping(chatId);
-                    ongoingStreams.delete(chatId);
-                }
-                logWithTimestamp('log', `已清理 ${ongoingStreams.size} 个活跃会话`);
-            } else if (data.type === 'update_settings') {
-                // 处理前端发送的设置更新
-                logWithTimestamp('log', '收到设置更新');
-                if (data.enableWhitelist !== undefined) {
-                    logWithTimestamp('log', `白名单启用状态: ${data.enableWhitelist}`);
-                    // 这里可以存储设置到服务器配置或内存中
-                }
-                if (data.userWhitelist !== undefined) {
-                    logWithTimestamp('log', `用户白名单: ${data.userWhitelist}`);
-                    // 这里可以存储设置到服务器配置或内存中
-                }
-                if (data.enableConnectionNotifications !== undefined) {
-                    logWithTimestamp('log', `连接状态通知: ${data.enableConnectionNotifications}`);
-                    notificationSettings.enableConnectionNotifications = data.enableConnectionNotifications;
-                }
-                if (data.enableGenerationNotifications !== undefined) {
-                    logWithTimestamp('log', `生成状态通知: ${data.enableGenerationNotifications}`);
-                    notificationSettings.enableGenerationNotifications = data.enableGenerationNotifications;
-                }
-                if (data.enableErrorNotifications !== undefined) {
-                    logWithTimestamp('log', `错误通知: ${data.enableErrorNotifications}`);
-                    notificationSettings.enableErrorNotifications = data.enableErrorNotifications;
-                }
             }
         } catch (error) {
             logWithTimestamp('error', '处理SillyTavern消息时出错:', error);
             // 确保即使在解析JSON失败时也能清理
             if (data && data.chatId) {
-                stopTyping(data.chatId);
                 ongoingStreams.delete(data.chatId);
             }
         }
@@ -1109,10 +743,6 @@ wss.on('connection', ws => {
 
     ws.on('close', () => {
         logWithTimestamp('log', 'SillyTavern扩展已断开连接。');
-        // 清理心跳检测定时器
-        if (heartbeatInterval) {
-            clearInterval(heartbeatInterval);
-        }
         if (ws.commandToExecuteOnClose) {
             const { command, chatId } = ws.commandToExecuteOnClose;
             logWithTimestamp('log', `客户端断开连接，现在执行预定命令: ${command}`);
@@ -1126,10 +756,6 @@ wss.on('connection', ws => {
 
     ws.on('error', (error) => {
         logWithTimestamp('error', 'WebSocket发生错误:', error);
-        // 清理心跳检测定时器
-        if (heartbeatInterval) {
-            clearInterval(heartbeatInterval);
-        }
         if (sillyTavernClient) {
             sillyTavernClient.commandToExecuteOnClose = null; // 清除标记，防止意外执行
         }
@@ -1137,76 +763,6 @@ wss.on('connection', ws => {
         ongoingStreams.clear();
     });
 });
-
-// === 图片处理函数 ===
-
-// 从Telegram下载文件（支持图片）
-async function downloadTelegramFile(fileId, chatId) {
-    try {
-        const file = await bot.getFile(fileId);
-        const fileUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-        
-        return new Promise((resolve, reject) => {
-            const protocol = fileUrl.startsWith('https') ? https : http;
-            protocol.get(fileUrl, (res) => {
-                if (res.statusCode !== 200) {
-                    reject(new Error(`下载失败，状态码: ${res.statusCode}`));
-                    return;
-                }
-                
-                const chunks = [];
-                res.on('data', (chunk) => chunks.push(chunk));
-                res.on('end', () => {
-                    const buffer = Buffer.concat(chunks);
-                    resolve({
-                        buffer: buffer,
-                        mimeType: res.headers['content-type'] || 'image/jpeg',
-                        fileName: file.file_path.split('/').pop() || `telegram_image_${fileId}.jpg`
-                    });
-                });
-            }).on('error', reject);
-        });
-    } catch (error) {
-        logWithTimestamp('error', `下载Telegram文件失败 (chatId: ${chatId}):`, error.message);
-        throw error;
-    }
-}
-
-// 将图片转换为base64（用于发送到SillyTavern）
-function bufferToBase64(buffer, mimeType) {
-    const base64 = buffer.toString('base64');
-    return `data:${mimeType};base64,${base64}`;
-}
-
-// 发送图片到Telegram
-async function sendImageToTelegram(chatId, imageData, caption = '') {
-    try {
-        // imageData 可以是 base64 string, Buffer, 或 URL
-        if (typeof imageData === 'string' && imageData.startsWith('data:')) {
-            // base64 data URL - 需要转换
-            const base64Data = imageData.split(',')[1];
-            const buffer = Buffer.from(base64Data, 'base64');
-            
-            await bot.sendPhoto(chatId, buffer, {
-                caption: caption,
-                filename: 'image.jpg'
-            });
-        } else if (Buffer.isBuffer(imageData)) {
-            await bot.sendPhoto(chatId, imageData, {
-                caption: caption,
-                filename: 'image.jpg'
-            });
-        } else if (typeof imageData === 'string' && imageData.startsWith('http')) {
-            await bot.sendPhoto(chatId, imageData, { caption: caption });
-        } else {
-            throw new Error('不支持的图片数据格式');
-        }
-        logWithTimestamp('log', `图片已发送到Telegram用户 ${chatId}`);
-    } catch (error) {
-        logWithTimestamp('error', `发送图片到Telegram失败:`, error.message);
-        throw error;
-    }
-}
 
 // 检查是否需要发送重启完成通知
 if (process.env.RESTART_NOTIFY_CHATID) {
@@ -1223,26 +779,17 @@ if (process.env.RESTART_NOTIFY_CHATID) {
 }
 
 // 监听Telegram消息
-bot.on('message', async (msg) => {
+bot.on('message', (msg) => {
     const chatId = msg.chat.id;
+    const text = msg.text;
     const userId = msg.from.id;
     const username = msg.from.username || 'N/A';
-    
-    // 检查是否是群聊消息且@了bot
-    const isGroupChat = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
-    const botUsername = config.botUsername || (await bot.getMe()).username;
-    const text = msg.text || '';
-    
-    // 如果是群聊消息且没有@bot，则忽略
-    if (isGroupChat && !text.includes(`@${botUsername}`)) {
-        return;
-    }
 
     // 检查白名单是否已配置且不为空
     if (config.allowedUserIds && config.allowedUserIds.length > 0) {
         // 如果当前用户的ID不在白名单中
         if (!config.allowedUserIds.includes(userId)) {
-            logWithTimestamp('log', `拒绝了来自非白名单用户的访问：\n  - User ID: ${userId}\n  - Username: @${username}\n  - Chat ID: ${chatId}\n  - Message: "${text || '[图片消息]'}"`);
+            logWithTimestamp('log', `拒绝了来自非白名单用户的访问：\n  - User ID: ${userId}\n  - Username: @${username}\n  - Chat ID: ${chatId}\n  - Message: "${text || '[图片]'}"`);
             // 向该用户发送一条拒绝消息
             bot.sendMessage(chatId, '抱歉，您无权使用此机器人。').catch(err => {
                 logWithTimestamp('error', `向 ${chatId} 发送拒绝消息失败:`, err.message);
@@ -1252,59 +799,29 @@ bot.on('message', async (msg) => {
         }
     }
 
-    // 处理图片消息
+    const messageText = text || '';
+    const isCommand = messageText.startsWith('/');
+
+    // 如果既没有文本也没有图片，则忽略
+    if (!messageText && !msg.photo) return;
+
+    // 处理带图片的消息（无论是否有文本）
+    let imageData = null;
     if (msg.photo && msg.photo.length > 0) {
-        if (sillyTavernClient && sillyTavernClient.readyState === WebSocket.OPEN) {
-            try {
-                logWithTimestamp('log', `从Telegram用户 ${chatId} 收到图片，正在下载...`);
-                
-                // 获取最大尺寸的图片（最后一个元素是最大尺寸）
-                const fileId = msg.photo[msg.photo.length - 1].file_id;
-                const fileData = await downloadTelegramFile(fileId, chatId);
-                const base64Image = bufferToBase64(fileData.buffer, fileData.mimeType);
-                
-                logWithTimestamp('log', `图片下载完成，大小: ${fileData.buffer.length} bytes，发送到SillyTavern...`);
-                
-                // 发送图片到SillyTavern
-                sillyTavernClient.send(JSON.stringify({
-                    type: 'user_image',
-                    chatId: chatId,
-                    image: base64Image,
-                    caption: msg.caption || '',
-                    mimeType: fileData.mimeType
-                }));
-                
-                logWithTimestamp('log', `图片已发送到SillyTavern (chatId: ${chatId})`);
-            } catch (error) {
-                logWithTimestamp('error', `处理Telegram图片失败:`, error.message);
-                bot.sendMessage(chatId, '抱歉，处理您的图片时出现了错误。').catch(err => {});
-            }
-        } else {
-            logWithTimestamp('warn', '收到Telegram图片，但SillyTavern扩展未连接。');
-            bot.sendMessage(chatId, '抱歉，我现在无法连接到SillyTavern。请确保SillyTavern已打开并启用了Telegram扩展。');
-        }
+        imageData = await handleMessageWithPhoto(msg, chatId, messageText);
+        // 如果有图片但没有文本，则使用占位文本
+        const finalText = messageText || '[图片]';
+        sendToSillyTavern(chatId, finalText, imageData);
         return;
     }
 
-    // 移除文本消息中的@bot提及（如果是群聊）
-    let processedText = text;
-    if (isGroupChat && botUsername) {
-        processedText = text.replace(new RegExp(`@${botUsername}\\s*`, 'g'), '').trim();
-        
-        // 如果处理后为空字符串，则忽略
-        if (!processedText) {
-            return;
-        }
-    }
-    if (!processedText) return;
-
-    if (processedText.startsWith('/')) {
-        const parts = processedText.slice(1).trim().split(/\s+/);
+    if (isCommand) {
+        const parts = text.slice(1).trim().split(/\s+/);
         const command = parts[0].toLowerCase();
         const args = parts.slice(1);
 
         // 系统命令由服务器直接处理
-        if (['reload', 'restart', 'exit', 'ping', 'clearcache'].includes(command)) {
+        if (['reload', 'restart', 'exit', 'ping'].includes(command)) {
             handleSystemCommand(command, chatId);
             return;
         }
@@ -1314,13 +831,23 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    // 处理普通文本消息
+    // 处理普通消息
+    sendToSillyTavern(chatId, text, null);
+});
+
+// 发送消息到SillyTavern的辅助函数
+function sendToSillyTavern(chatId, text, imageData) {
     if (sillyTavernClient && sillyTavernClient.readyState === WebSocket.OPEN) {
-        logWithTimestamp('log', `从Telegram用户 ${chatId} 收到消息: "${processedText}"`);
-        const payload = JSON.stringify({ type: 'user_message', chatId, text: processedText });
+        logWithTimestamp('log', `从Telegram用户 ${chatId} 收到消息: "${text}"${imageData ? ' (带图片)' : ''}`);
+        const payload = JSON.stringify({ 
+            type: 'user_message', 
+            chatId, 
+            text,
+            image: imageData ? imageData.data : null
+        });
         sillyTavernClient.send(payload);
     } else {
         logWithTimestamp('warn', '收到Telegram消息，但SillyTavern扩展未连接。');
         bot.sendMessage(chatId, '抱歉，我现在无法连接到SillyTavern。请确保SillyTavern已打开并启用了Telegram扩展。');
     }
-});
+}
