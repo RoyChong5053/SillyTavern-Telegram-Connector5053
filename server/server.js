@@ -131,6 +131,23 @@ function stopTyping(chatId) {
     }
 }
 
+// 检查是否应该发送特定类型的通知到Telegram（基于消息内容）
+function shouldSendNotification(messageText) {
+    // 基于消息内容判断通知类型
+    if (messageText.includes('连接') || messageText.includes('断开') || messageText.includes('重连')) {
+        return notificationSettings.enableConnectionNotifications;
+    }
+    if (messageText.includes('生成') || messageText.includes('思考') || messageText.includes('等待')) {
+        return notificationSettings.enableGenerationNotifications;
+    }
+    if (messageText.includes('错误') || messageText.includes('失败') || messageText.includes('抱歉')) {
+        return notificationSettings.enableErrorNotifications;
+    }
+    
+    // 默认发送所有通知
+    return true;
+}
+
 // 自动清理长时间无活动的输入中状态
 setInterval(() => {
     const now = Date.now();
@@ -240,6 +257,13 @@ let sillyTavernClient = null; // 用于存储连接的SillyTavern扩展客户端
 // 用于存储正在进行的流式会话，调整会话结构，使用Promise来处理messageId
 // 结构: { messagePromise: Promise<number> | null, lastText: String, timer: NodeJS.Timeout | null, isEditing: boolean, lastActivity: number }
 const ongoingStreams = new Map();
+
+// 通知设置 - 控制不同类型的通知是否发送到Telegram
+const notificationSettings = {
+    enableConnectionNotifications: true, // 连接状态通知
+    enableGenerationNotifications: true, // 生成状态通知  
+    enableErrorNotifications: true,      // 错误通知
+};
 
 // 定期清理过期的流式会话（防止状态残留）
 function cleanupExpiredSessions() {
@@ -902,6 +926,27 @@ wss.on('connection', ws => {
                 bot.sendMessage(data.chatId, messageText, {
                     parse_mode: parseMode
                 });
+            } else if (data.type === 'info_message' && data.chatId) {
+                logWithTimestamp('log', `收到信息消息，发送至Telegram用户 ${data.chatId}: ${data.text}`);
+                
+                // 信息消息也使用HTML格式（如果需要）
+                let messageText = data.text;
+                let parseMode = undefined;
+                
+                if (config.messageFormat === 'html') {
+                    messageText = convertToTelegramHtml(data.text);
+                    parseMode = 'HTML';
+                }
+                
+                // 检查是否应该发送通知（基于消息内容类型）
+                const shouldSend = shouldSendNotification(data.text);
+                if (shouldSend) {
+                    bot.sendMessage(data.chatId, messageText, {
+                        parse_mode: parseMode
+                    });
+                } else {
+                    logWithTimestamp('log', '通知设置已禁用，跳过发送信息消息');
+                }
             } else if (data.type === 'ai_reply' && data.chatId) {
                 logWithTimestamp('log', `收到非流式AI回复，发送至Telegram用户 ${data.chatId}`);
                 // 确保在发送消息前清理可能存在的流式会话
@@ -987,6 +1032,18 @@ wss.on('connection', ws => {
                 if (data.userWhitelist !== undefined) {
                     logWithTimestamp('log', `用户白名单: ${data.userWhitelist}`);
                     // 这里可以存储设置到服务器配置或内存中
+                }
+                if (data.enableConnectionNotifications !== undefined) {
+                    logWithTimestamp('log', `连接状态通知: ${data.enableConnectionNotifications}`);
+                    notificationSettings.enableConnectionNotifications = data.enableConnectionNotifications;
+                }
+                if (data.enableGenerationNotifications !== undefined) {
+                    logWithTimestamp('log', `生成状态通知: ${data.enableGenerationNotifications}`);
+                    notificationSettings.enableGenerationNotifications = data.enableGenerationNotifications;
+                }
+                if (data.enableErrorNotifications !== undefined) {
+                    logWithTimestamp('log', `错误通知: ${data.enableErrorNotifications}`);
+                    notificationSettings.enableErrorNotifications = data.enableErrorNotifications;
                 }
             }
         } catch (error) {

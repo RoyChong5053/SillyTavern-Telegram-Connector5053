@@ -29,6 +29,9 @@ const DEFAULT_SETTINGS = {
     autoConnect: true,
     userWhitelist: '', // 逗号分隔的用户ID白名单，为空表示允许所有用户
     enableWhitelist: false, // 是否启用白名单功能
+    enableConnectionNotifications: true, // 启用连接状态通知
+    enableGenerationNotifications: true, // 启用生成状态通知
+    enableErrorNotifications: true, // 启用错误通知
 };
 
 let ws = null; // WebSocket实例
@@ -60,6 +63,21 @@ function updateStatus(message, color) {
     }
 }
 
+// 检查是否应该发送特定类型的通知到Telegram
+function shouldSendNotification(notificationType) {
+    const settings = getSettings();
+    switch (notificationType) {
+        case 'connection':
+            return settings.enableConnectionNotifications !== false;
+        case 'generation':
+            return settings.enableGenerationNotifications !== false;
+        case 'error':
+            return settings.enableErrorNotifications !== false;
+        default:
+            return true; // 默认发送所有通知
+    }
+}
+
 function reloadPage() {
     window.location.reload();
 }
@@ -71,7 +89,10 @@ function sendSettingsToServer() {
         ws.send(JSON.stringify({
             type: 'update_settings',
             enableWhitelist: settings.enableWhitelist,
-            userWhitelist: settings.userWhitelist
+            userWhitelist: settings.userWhitelist,
+            enableConnectionNotifications: settings.enableConnectionNotifications,
+            enableGenerationNotifications: settings.enableGenerationNotifications,
+            enableErrorNotifications: settings.enableErrorNotifications
         }));
         console.log('[Telegram Bridge] 设置已发送到服务器');
     }
@@ -120,7 +141,7 @@ function connect() {
             // 检查是否正在生成中，如果是则拦截用户消息并发送提示
             if ((data.type === 'user_message' || data.type === 'user_image') && isStreamingMode) {
                 console.log('[Telegram Bridge] 检测到正在生成中，拦截用户消息');
-                if (ws && ws.readyState === WebSocket.OPEN) {
+                if (ws && ws.readyState === WebSocket.OPEN && shouldSendNotification('generation')) {
                     ws.send(JSON.stringify({
                         type: 'info_message',
                         chatId: data.chatId,
@@ -562,6 +583,9 @@ jQuery(async () => {
         $('#telegram_auto_connect').prop('checked', settings.autoConnect);
         $('#telegram_enable_whitelist').prop('checked', settings.enableWhitelist);
         $('#telegram_user_whitelist').val(settings.userWhitelist);
+        $('#telegram_enable_connection_notifications').prop('checked', settings.enableConnectionNotifications);
+        $('#telegram_enable_generation_notifications').prop('checked', settings.enableGenerationNotifications);
+        $('#telegram_enable_error_notifications').prop('checked', settings.enableErrorNotifications);
 
         $('#telegram_bridge_url').on('input', () => {
             const settings = getSettings();
@@ -591,6 +615,33 @@ jQuery(async () => {
             const settings = getSettings();
             settings.userWhitelist = $('#telegram_user_whitelist').val();
             // 确保调用saveSettingsDebounced保存设置
+            saveSettingsDebounced();
+            sendSettingsToServer(); // 立即发送到服务器
+        });
+
+        // 连接状态通知设置
+        $('#telegram_enable_connection_notifications').on('change', function () {
+            const settings = getSettings();
+            settings.enableConnectionNotifications = $(this).prop('checked');
+            console.log(`[Telegram Bridge] 连接状态通知设置已更改为: ${settings.enableConnectionNotifications}`);
+            saveSettingsDebounced();
+            sendSettingsToServer(); // 立即发送到服务器
+        });
+
+        // 生成状态通知设置
+        $('#telegram_enable_generation_notifications').on('change', function () {
+            const settings = getSettings();
+            settings.enableGenerationNotifications = $(this).prop('checked');
+            console.log(`[Telegram Bridge] 生成状态通知设置已更改为: ${settings.enableGenerationNotifications}`);
+            saveSettingsDebounced();
+            sendSettingsToServer(); // 立即发送到服务器
+        });
+
+        // 错误通知设置
+        $('#telegram_enable_error_notifications').on('change', function () {
+            const settings = getSettings();
+            settings.enableErrorNotifications = $(this).prop('checked');
+            console.log(`[Telegram Bridge] 错误通知设置已更改为: ${settings.enableErrorNotifications}`);
             saveSettingsDebounced();
             sendSettingsToServer(); // 立即发送到服务器
         });
