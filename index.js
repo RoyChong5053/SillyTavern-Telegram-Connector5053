@@ -27,6 +27,8 @@ const MODULE_NAME = 'SillyTavern-Telegram-Connector';
 const DEFAULT_SETTINGS = {
     bridgeUrl: 'ws://127.0.0.1:2333',
     autoConnect: true,
+    userWhitelist: '', // 逗号分隔的用户ID白名单，为空表示允许所有用户
+    enableWhitelist: false, // 是否启用白名单功能
 };
 
 let ws = null; // WebSocket实例
@@ -61,6 +63,19 @@ function updateStatus(message, color) {
 function reloadPage() {
     window.location.reload();
 }
+
+// 发送设置到服务器
+function sendSettingsToServer() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        const settings = getSettings();
+        ws.send(JSON.stringify({
+            type: 'update_settings',
+            enableWhitelist: settings.enableWhitelist,
+            userWhitelist: settings.userWhitelist
+        }));
+        console.log('[Telegram Bridge] 设置已发送到服务器');
+    }
+}
 // ---
 
 // 连接到WebSocket服务器
@@ -92,6 +107,8 @@ function connect() {
         updateStatus('已连接', 'green');
         // 重置重连计数器
         reconnectAttempts = 0;
+        // 连接成功后立即发送当前设置到服务器
+        sendSettingsToServer();
     };
 
     // 定义消息处理函数
@@ -543,6 +560,8 @@ jQuery(async () => {
         const settings = getSettings();
         $('#telegram_bridge_url').val(settings.bridgeUrl);
         $('#telegram_auto_connect').prop('checked', settings.autoConnect);
+        $('#telegram_enable_whitelist').prop('checked', settings.enableWhitelist);
+        $('#telegram_user_whitelist').val(settings.userWhitelist);
 
         $('#telegram_bridge_url').on('input', () => {
             const settings = getSettings();
@@ -557,6 +576,23 @@ jQuery(async () => {
             // 确保调用saveSettingsDebounced保存设置
             console.log(`[Telegram Bridge] 自动连接设置已更改为: ${settings.autoConnect}`);
             saveSettingsDebounced();
+        });
+
+        $('#telegram_enable_whitelist').on('change', function () {
+            const settings = getSettings();
+            settings.enableWhitelist = $(this).prop('checked');
+            // 确保调用saveSettingsDebounced保存设置
+            console.log(`[Telegram Bridge] 白名单启用设置已更改为: ${settings.enableWhitelist}`);
+            saveSettingsDebounced();
+            sendSettingsToServer(); // 立即发送到服务器
+        });
+
+        $('#telegram_user_whitelist').on('input', () => {
+            const settings = getSettings();
+            settings.userWhitelist = $('#telegram_user_whitelist').val();
+            // 确保调用saveSettingsDebounced保存设置
+            saveSettingsDebounced();
+            sendSettingsToServer(); // 立即发送到服务器
         });
 
         $('#telegram_connect_button').on('click', connect);

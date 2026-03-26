@@ -977,6 +977,17 @@ wss.on('connection', ws => {
                     ongoingStreams.delete(chatId);
                 }
                 logWithTimestamp('log', `已清理 ${ongoingStreams.size} 个活跃会话`);
+            } else if (data.type === 'update_settings') {
+                // 处理前端发送的设置更新
+                logWithTimestamp('log', '收到设置更新');
+                if (data.enableWhitelist !== undefined) {
+                    logWithTimestamp('log', `白名单启用状态: ${data.enableWhitelist}`);
+                    // 这里可以存储设置到服务器配置或内存中
+                }
+                if (data.userWhitelist !== undefined) {
+                    logWithTimestamp('log', `用户白名单: ${data.userWhitelist}`);
+                    // 这里可以存储设置到服务器配置或内存中
+                }
             }
         } catch (error) {
             logWithTimestamp('error', '处理SillyTavern消息时出错:', error);

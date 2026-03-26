@@ -25,6 +25,21 @@
             </div>
 
             <hr class="sysHR" />
+
+            <div class="telegram-connector_block flex-container">
+                <label class="checkbox_label" for="telegram_enable_whitelist">
+                    <input type="checkbox" id="telegram_enable_whitelist">
+                    <span>启用用户白名单</span>
+                </label>
+            </div>
+
+            <div class="telegram-connector_block flex-container">
+                <label for="telegram_user_whitelist">用户白名单（Telegram User IDs，逗号分隔）</label>
+                <textarea id="telegram_user_whitelist" class="text_pole" rows="3" placeholder="例如：123456789,987654321"></textarea>
+                <small style="color: #666;">留空表示允许所有用户访问</small>
+            </div>
+
+            <hr class="sysHR" />
         </div>
     </div>
 </div>
