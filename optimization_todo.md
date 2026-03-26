@@ -15,6 +15,9 @@
 - ✅ **Bot信息解析方式改为HTML** - 提升消息格式化能力
 - ✅ **实现WebSocket心跳检测** - 确保浏览器连接存活状态
 - ✅ **实现WebSocket自动重连机制** - 指数退避算法，最大10次重连尝试
+- ✅ **实现AI图片发送功能** - 监听SillyTavern图片生成事件并转发到Telegram
+- ✅ **实现用户图片接收处理** - 支持Telegram用户发送图片到SillyTavern
+- ✅ **完善图片发送机制** - 使用bot.sendPhoto()标准API，支持caption说明文字
 
 ### 1. 架构优化
 - [x] **转换为标准SillyTavern服务端插件** - 遵循官方插件规范
@@ -43,6 +46,7 @@
 - [ ] **扩展设置页新增白名单设置** - 增强安全性
 - [ ] **控制网页活动通知** - 可配置的通知选项
 - [ ] **实现消息编辑优化** - 减少不必要的编辑操作
+- [x] **支持图片消息** - AI生成图片和用户发送图片双向支持
 
 ### 5. 安全性增强
 - [ ] **实现用户认证机制** - 防止未授权访问
@@ -78,8 +82,9 @@
 
 ## Telegram集成状态
 - ✅ 项目Telegram服务器功能正常（已测试WebSocket启动）
-- ⏳ Hermes Agent Telegram集成待配置
-- 📋 需要设置TELEGRAM_BOT_TOKEN和TELEGRAM_CHAT_ID环境变量
+- ✅ Hermes Agent Telegram集成已配置 - 可通过cron任务发送报告
+- ✅ Telegram图片发送功能已实现 - 支持AI生成图片和用户发送图片
+- 📋 需要测试图片功能是否正常工作
 - 🔧 cron任务已更新，当Telegram可用时会自动发送报告
 
 ## 监控指标
