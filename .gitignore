@@ -30,6 +30,7 @@ pids
 dist/
 build/
 coverage/
+original-code/
 
 # 临时文件
 .tmp/

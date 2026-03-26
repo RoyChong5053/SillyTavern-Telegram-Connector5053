@@ -39,6 +39,7 @@ let lastProcessedChatId = null; // 用于存储最后处理过的Telegram chatId
 
 // 添加一个全局变量来跟踪当前是否处于流式模式
 let isStreamingMode = false;
+let lastStreamedText = '';
 
 // 自动重连相关变量
 let reconnectAttempts = 0;
@@ -749,13 +750,25 @@ function processMessageElement(messageElement, messageIndex) {
             console.log(`[Telegram Bridge] 捕获到最终渲染文本，准备发送更新到 chatId: ${lastProcessedChatId}`);
 
             // 判断是流式还是非流式响应
-            if (renderedText.trim() !== lastStreamedText.trim()) {
-                console.log('[Telegram Bridge] 检测到非流式响应差异，发送最终更新');
-                sendMessageUpdate(lastProcessedChatId, renderedText);
+            if (isStreamingMode) {
+                // 流式响应 - 发送final_message_update
+                ws.send(JSON.stringify({
+                    type: 'final_message_update',
+                    chatId: lastProcessedChatId,
+                    text: renderedText,
+                }));
+                isStreamingMode = false;
+            } else {
+                // 非流式响应 - 直接发送ai_reply
+                ws.send(JSON.stringify({
+                    type: 'ai_reply',
+                    chatId: lastProcessedChatId,
+                    text: renderedText,
+                }));
             }
 
+            // 重置chatId，避免意外更新其他用户的消息
             lastProcessedChatId = null;
-            lastStreamedText = '';
         } else {
             console.log('[Telegram Bridge] 警告: 消息元素缺少 .mes_text 内容');
             lastProcessedChatId = null;
@@ -765,18 +778,6 @@ function processMessageElement(messageElement, messageIndex) {
         lastProcessedChatId = null;
     }
 }
-                        chatId: lastProcessedChatId,
-                        text: renderedText,
-                    }));
-                }
-
-                // 重置chatId，避免意外更新其他用户的消息
-                lastProcessedChatId = null;
-            }
-        }
-    }, 100);
-}
-
 // 全局事件监听器，用于最终消息更新
 eventSource.on(event_types.GENERATION_ENDED, handleFinalMessage);
 
