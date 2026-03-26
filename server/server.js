@@ -234,6 +234,17 @@ function reloadServer(chatId) {
 function restartServer(chatId) {
     logWithTimestamp('log', '重启服务器端组件...');
 
+    // 清理重启保护文件，防止误判为循环重启
+    try {
+        if (fs.existsSync(RESTART_PROTECTION_FILE)) {
+            fs.unlinkSync(RESTART_PROTECTION_FILE);
+            logWithTimestamp('log', '已清理重启保护文件，防止循环重启误判');
+        }
+    } catch (error) {
+        logWithTimestamp('error', '清理重启保护文件失败:', error);
+        // 即使清理失败也继续重启过程
+    }
+
     // 首先停止Telegram Bot轮询
     bot.stopPolling().then(() => {
         logWithTimestamp('log', 'Telegram Bot轮询已停止');
@@ -276,6 +287,18 @@ function restartServer(chatId) {
         }
     }).catch(err => {
         logWithTimestamp('error', '停止Telegram Bot轮询时出错:', err);
+        
+        // 清理重启保护文件，防止误判为循环重启
+        try {
+            if (fs.existsSync(RESTART_PROTECTION_FILE)) {
+                fs.unlinkSync(RESTART_PROTECTION_FILE);
+                logWithTimestamp('log', '已清理重启保护文件，防止循环重启误判');
+            }
+        } catch (error) {
+            logWithTimestamp('error', '清理重启保护文件失败:', error);
+            // 即使清理失败也继续重启过程
+        }
+        
         // 即使出错也继续重启过程
         if (wss) {
             wss.close(() => {
