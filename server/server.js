@@ -94,6 +94,52 @@ function checkRestartProtection() {
     }
 }
 
+// 智能消息编辑辅助函数
+function shouldTriggerEdit(oldText, newText) {
+    if (!oldText || !newText) return true;
+    
+    // 如果文本完全相同，不需要编辑
+    if (oldText === newText) return false;
+    
+    // 计算文本相似度
+    const similarity = calculateTextSimilarity(oldText, newText);
+    
+    // 如果相似度很高（小改动），减少编辑频率
+    if (similarity > 0.95) {
+        // 小改动：只有当字符数变化超过一定阈值时才编辑
+        const lengthDiff = Math.abs(newText.length - oldText.length);
+        return lengthDiff > 5; // 至少5个字符的变化
+    }
+    
+    // 中等或大幅变化：总是编辑
+    return true;
+}
+
+function calculateTextSimilarity(text1, text2) {
+    // 简单的文本相似度计算（基于最长公共子序列比例）
+    const longer = text1.length > text2.length ? text1 : text2;
+    const shorter = text1.length > text2.length ? text2 : text1;
+    
+    if (longer.length === 0) return 1.0;
+    
+    // 计算编辑距离（简化版）
+    let commonChars = 0;
+    for (let i = 0; i < Math.min(longer.length, shorter.length); i++) {
+        if (longer[i] === shorter[i]) {
+            commonChars++;
+        }
+    }
+    
+    return commonChars / longer.length;
+}
+
+function calculateEditDelay(textLength) {
+    // 动态计算编辑延迟：文本越长，延迟越短（更快更新）
+    if (textLength <= 50) return 3000; // 短文本：3秒延迟
+    if (textLength <= 200) return 2000; // 中等文本：2秒延迟
+    return 1000; // 长文本：1秒延迟（用户期望更快更新）
+}
+
 // 输入中状态管理函数
 function startTyping(chatId) {
     const session = ongoingStreams.get(chatId);
@@ -777,41 +823,46 @@ wss.on('connection', ws => {
                     session.lastActivity = Date.now(); // 更新最后活动时间
                 }
 
-                // 3. 尝试触发一次编辑（节流保护）
+                // 3. 尝试触发一次编辑（智能节流保护）
                 // 确保 messageId 已经获取到，并且当前没有正在进行的编辑或定时器
                 // 使用 await messagePromise 来确保messageId可用
                 const messageId = await session.messagePromise;
 
                 if (messageId && !session.isEditing && !session.timer) {
-                    session.timer = setTimeout(async () => { // 定时器回调也设为async
-                        const currentSession = ongoingStreams.get(data.chatId);
-                        if (currentSession) {
-                            const currentMessageId = await currentSession.messagePromise;
-                            if (currentMessageId) {
-                                currentSession.isEditing = true;
-                                // 流式更新消息也使用HTML格式
-                                let messageText = currentSession.lastText + ' ...';
-                                let parseMode = undefined;
-                                
-                                if (config.messageFormat === 'html') {
-                                    messageText = convertToTelegramHtml(currentSession.lastText + ' ...');
-                                    parseMode = 'HTML';
+                    // 智能编辑决策：只有当文本有显著变化时才进行编辑
+                    const shouldEdit = shouldTriggerEdit(session.lastText, data.text);
+                    
+                    if (shouldEdit) {
+                        session.timer = setTimeout(async () => { // 定时器回调也设为async
+                            const currentSession = ongoingStreams.get(data.chatId);
+                            if (currentSession) {
+                                const currentMessageId = await currentSession.messagePromise;
+                                if (currentMessageId) {
+                                    currentSession.isEditing = true;
+                                    // 流式更新消息也使用HTML格式
+                                    let messageText = currentSession.lastText;
+                                    let parseMode = undefined;
+                                    
+                                    if (config.messageFormat === 'html') {
+                                        messageText = convertToTelegramHtml(currentSession.lastText);
+                                        parseMode = 'HTML';
+                                    }
+                                    
+                                    bot.editMessageText(messageText, {
+                                        chat_id: data.chatId,
+                                        message_id: currentMessageId,
+                                        parse_mode: parseMode
+                                    }).catch(err => {
+                                        if (!err.message.includes('message is not modified'))
+                                            logWithTimestamp('error', '编辑Telegram消息失败:', err.message);
+                                    }).finally(() => {
+                                        if (ongoingStreams.has(data.chatId)) ongoingStreams.get(data.chatId).isEditing = false;
+                                    });
                                 }
-                                
-                                bot.editMessageText(messageText, {
-                                    chat_id: data.chatId,
-                                    message_id: currentMessageId,
-                                    parse_mode: parseMode
-                                }).catch(err => {
-                                    if (!err.message.includes('message is not modified'))
-                                        logWithTimestamp('error', '编辑Telegram消息失败:', err.message);
-                                }).finally(() => {
-                                    if (ongoingStreams.has(data.chatId)) ongoingStreams.get(data.chatId).isEditing = false;
-                                });
+                                currentSession.timer = null;
                             }
-                            currentSession.timer = null;
-                        }
-                    }, 2000);
+                        }, calculateEditDelay(data.text.length)); // 动态延迟基于文本长度
+                    }
                 }
                 return;
             }
