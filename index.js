@@ -1,25 +1,11 @@
-// index.js
+// index.js - 使用 window 对象访问 SillyTavern API
 
-import {
-    extension_settings,
-    getContext,
-    saveSettingsDebounced,
-    renderExtensionTemplateAsync,
-} from "../../../../extensions.js";
-
-import {
-    eventSource,
-    event_types,
-} from "../../../../scripts/events.js";
-
-let getPastCharacterChats;
-let sendMessageAsUser;
-let doNewChat;
-let selectCharacterById;
-let openCharacterChat;
-let Generate;
-let setExternalAbortController;
-let deleteLastMessage;
+let extension_settings;
+let getContext;
+let saveSettingsDebounced;
+let renderExtensionTemplateAsync;
+let eventSource;
+let event_types;
 
 const MODULE_NAME = 'SillyTavern-Telegram-Connector';
 const DEFAULT_SETTINGS = {
@@ -338,7 +324,7 @@ function connect() {
                 let replyText = '命令执行失败，请稍后重试。';
 
                 // 直接调用全局的 SillyTavern.getContext()
-                const context = SillyTavern.getContext();
+                const context = window.SillyTavern.getContext();
                 let commandSuccess = false;
 
                 try {
@@ -571,8 +557,16 @@ function scheduleReconnect() {
 
 // 扩展加载时执行的函数
 jQuery(async () => {
-    // 延迟导入需要等待 SillyTavern 初始化后才能获取的函数
-    const context = getContext();
+    // 初始化从 window.SillyTavern 获取所需的 API
+    const st = window.SillyTavern;
+    extension_settings = st.getContext().extensionSettings;
+    saveSettingsDebounced = st.getContext().saveSettingsDebounced;
+    renderExtensionTemplateAsync = st.getContext().renderExtensionTemplateAsync;
+    eventSource = st.getContext().eventSource;
+    event_types = st.getContext().event_types;
+
+    // 获取其他函数
+    const context = st.getContext();
     getPastCharacterChats = context.getPastCharacterChats;
     sendMessageAsUser = context.sendMessageAsUser;
     doNewChat = context.doNewChat;
