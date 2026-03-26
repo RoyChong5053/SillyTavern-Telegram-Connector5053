@@ -41,6 +41,10 @@ const RESTART_PROTECTION_FILE = path.join(__dirname, '.restart_protection');
 const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 60000; // 1分钟
 
+// 输入中状态管理
+const TYPING_INTERVAL_MS = 4000; // Telegram typing状态有效期为5秒，我们每4秒刷新一次
+const TYPING_CLEANUP_INTERVAL_MS = 10000; // 10秒无活动自动清理typing状态
+
 // 检查是否可能处于循环重启状态
 function checkRestartProtection() {
     try {
@@ -89,6 +93,54 @@ function checkRestartProtection() {
         // 出错时继续执行，不要阻止服务器启动
     }
 }
+
+// 输入中状态管理函数
+function startTyping(chatId) {
+    const session = ongoingStreams.get(chatId);
+    if (!session) return;
+    
+    // 清除现有的定时器
+    if (session.typingTimer) {
+        clearInterval(session.typingTimer);
+    }
+    
+    // 立即发送一次输入中状态
+    bot.sendChatAction(chatId, 'typing').catch(error =>
+        logWithTimestamp('error', '发送"输入中"状态失败:', error));
+    session.lastTypingTime = Date.now();
+    
+    // 设置定时器持续发送输入中状态
+    session.typingTimer = setInterval(() => {
+        // 检查会话是否还存在
+        if (!ongoingStreams.has(chatId)) {
+            clearInterval(session.typingTimer);
+            return;
+        }
+        
+        bot.sendChatAction(chatId, 'typing').catch(error =>
+            logWithTimestamp('error', '发送"输入中"状态失败:', error));
+        session.lastTypingTime = Date.now();
+    }, TYPING_INTERVAL_MS);
+}
+
+function stopTyping(chatId) {
+    const session = ongoingStreams.get(chatId);
+    if (session && session.typingTimer) {
+        clearInterval(session.typingTimer);
+        session.typingTimer = null;
+    }
+}
+
+// 自动清理长时间无活动的输入中状态
+setInterval(() => {
+    const now = Date.now();
+    for (const [chatId, session] of ongoingStreams.entries()) {
+        if (session.typingTimer && now - session.lastTypingTime > TYPING_CLEANUP_INTERVAL_MS) {
+            logWithTimestamp('warn', `自动清理ChatID ${chatId}的长时间无活动输入中状态`);
+            stopTyping(chatId);
+        }
+    }
+}, TYPING_CLEANUP_INTERVAL_MS);
 
 // 启动时检查重启保护（仅在设置了重启标记时）
 if (process.env.TELEGRAM_CLEAR_UPDATES === '1') {
@@ -677,8 +729,13 @@ wss.on('connection', ws => {
                         timer: null,
                         isEditing: false, // 新增状态锁
                         lastActivity: Date.now(), // 记录最后活动时间
+                        typingTimer: null, // 输入中状态定时器
+                        lastTypingTime: Date.now(), // 最后输入中状态更新时间
                     };
                     ongoingStreams.set(data.chatId, session);
+                    
+                    // 开始持续显示输入中状态
+                    startTyping(data.chatId);
 
                     // 异步发送第一条消息并更新 session
                     bot.sendMessage(data.chatId, '正在思考...')
@@ -687,6 +744,7 @@ wss.on('connection', ws => {
                             resolveMessagePromise(sentMessage.message_id);
                         }).catch(err => {
                             logWithTimestamp('error', '发送初始Telegram消息失败:', err);
+                            stopTyping(data.chatId);
                             ongoingStreams.delete(data.chatId); // 出错时清理
                         });
                 } else {
@@ -800,6 +858,7 @@ wss.on('connection', ws => {
                         logWithTimestamp('warn', `收到final_message_update，但流式会话的messageId未能获取。`);
                     }
                     // 清理流式会话
+                    stopTyping(data.chatId);
                     ongoingStreams.delete(data.chatId);
                     logWithTimestamp('log', `ChatID ${data.chatId} 的流式会话已完成并清理。`);
                 }
@@ -848,6 +907,7 @@ wss.on('connection', ws => {
                 // 确保在发送消息前清理可能存在的流式会话
                 if (ongoingStreams.has(data.chatId)) {
                     logWithTimestamp('log', `清理 ChatID ${data.chatId} 的流式会话，因为收到了非流式回复`);
+                    stopTyping(data.chatId);
                     ongoingStreams.delete(data.chatId);
                 }
                 // 根据配置选择消息格式
@@ -900,6 +960,7 @@ wss.on('connection', ws => {
                         clearTimeout(session.timer);
                     }
                     // 从Map中删除会话
+                    stopTyping(data.chatId);
                     ongoingStreams.delete(data.chatId);
                     logWithTimestamp('log', `ChatID ${data.chatId} 的流式会话已清理`);
                 } else {
@@ -912,6 +973,7 @@ wss.on('connection', ws => {
                     if (session.timer) {
                         clearTimeout(session.timer);
                     }
+                    stopTyping(chatId);
                     ongoingStreams.delete(chatId);
                 }
                 logWithTimestamp('log', `已清理 ${ongoingStreams.size} 个活跃会话`);
@@ -920,6 +982,7 @@ wss.on('connection', ws => {
             logWithTimestamp('error', '处理SillyTavern消息时出错:', error);
             // 确保即使在解析JSON失败时也能清理
             if (data && data.chatId) {
+                stopTyping(data.chatId);
                 ongoingStreams.delete(data.chatId);
             }
         }
