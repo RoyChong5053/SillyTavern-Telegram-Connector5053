@@ -10,15 +10,16 @@ import {
 import {
     eventSource,
     event_types,
-    getPastCharacterChats,
-    sendMessageAsUser,
-    doNewChat,
-    selectCharacterById,
-    openCharacterChat,
-    Generate,
-    setExternalAbortController,
-    deleteLastMessage,
-} from "../../../../script.js";
+} from "../../../../scripts/events.js";
+
+let getPastCharacterChats;
+let sendMessageAsUser;
+let doNewChat;
+let selectCharacterById;
+let openCharacterChat;
+let Generate;
+let setExternalAbortController;
+let deleteLastMessage;
 
 const MODULE_NAME = 'SillyTavern-Telegram-Connector';
 const DEFAULT_SETTINGS = {
@@ -570,6 +571,17 @@ function scheduleReconnect() {
 
 // 扩展加载时执行的函数
 jQuery(async () => {
+    // 延迟导入需要等待 SillyTavern 初始化后才能获取的函数
+    const context = getContext();
+    getPastCharacterChats = context.getPastCharacterChats;
+    sendMessageAsUser = context.sendMessageAsUser;
+    doNewChat = context.doNewChat;
+    selectCharacterById = context.selectCharacterById;
+    openCharacterChat = context.openCharacterChat;
+    Generate = context.Generate;
+    setExternalAbortController = context.setExternalAbortController;
+    deleteLastMessage = context.deleteLastMessage;
+
     console.log('[Telegram Bridge] 正在尝试加载设置 UI...');
     try {
         const settingsHtml = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
@@ -715,8 +727,8 @@ function observeDOMForMessageUpdate(messageIndex) {
 
 // 处理消息元素的通用函数
 function processMessageElement(messageElement, messageIndex) {
-    // 直接调用全局的 SillyTavern.getContext()
-    const context = SillyTavern.getContext();
+    // 直接调用 getContext()
+    const context = getContext();
     const lastMessage = context.chat[messageIndex];
 
     // 确认这是我们刚刚通过Telegram触发的AI回复
