@@ -186,8 +186,27 @@ logWithTimestamp('log', `WebSocket服务器正在监听端口 ${wssPort}...`);
 let sillyTavernClient = null; // 用于存储连接的SillyTavern扩展客户端
 
 // 用于存储正在进行的流式会话，调整会话结构，使用Promise来处理messageId
-// 结构: { messagePromise: Promise<number> | null, lastText: String, timer: NodeJS.Timeout | null, isEditing: boolean }
+// 结构: { messagePromise: Promise<number> | null, lastText: String, timer: NodeJS.Timeout | null, isEditing: boolean, lastActivity: number }
 const ongoingStreams = new Map();
+
+// 定期清理过期的流式会话（防止状态残留）
+function cleanupExpiredSessions() {
+    const now = Date.now();
+    const expiredThreshold = 5 * 60 * 1000; // 5分钟无活动视为过期
+    
+    for (const [chatId, session] of ongoingStreams.entries()) {
+        if (now - session.lastActivity > expiredThreshold) {
+            logWithTimestamp('log', `清理过期会话 ChatID ${chatId} (最后活动: ${new Date(session.lastActivity).toLocaleTimeString()})`);
+            if (session.timer) {
+                clearTimeout(session.timer);
+            }
+            ongoingStreams.delete(chatId);
+        }
+    }
+}
+
+// 每30秒清理一次过期会话
+setInterval(cleanupExpiredSessions, 30000);
 
 // 重载服务器函数
 function reloadServer(chatId) {
@@ -377,6 +396,13 @@ function handleSystemCommand(command, chatId) {
                 exitServer();
             }
             break;
+        case 'clearcache':
+            responseMessage = '正在清理缓存状态...';
+            // 清理所有缓存状态
+            if (sillyTavernClient && sillyTavernClient.readyState === WebSocket.OPEN) {
+                sillyTavernClient.send(JSON.stringify({ type: 'clear_all_cache' }));
+            }
+            break;
         default:
             logWithTimestamp('warn', `未知的系统命令: ${command}`);
             bot.sendMessage(chatId, `未知的系统命令: /${command}`);
@@ -417,7 +443,8 @@ async function handleTelegramCommand(command, args, chatId) {
         replyText += `/reload - 重载插件的服务器端组件并刷新ST网页。\n`;
         replyText += `/restart - 刷新ST网页并重启插件的服务器端组件。\n`;
         replyText += `/exit - 退出插件的服务器端组件。\n`;
-        replyText += `/ping - 检查连接状态。\n\n`;
+        replyText += `/ping - 检查连接状态。\n`;
+        replyText += `/clearcache - 清理缓存状态。\n\n`;
         replyText += `帮助\n`;
         replyText += `/help - 显示此帮助信息。`;
 
@@ -477,6 +504,12 @@ async function handleTelegramCommand(command, args, chatId) {
             if (args.length === 0) {
                 replyText = '请提供角色名称或序号。用法: /switchchar <角色名称> 或 /switchchar_数字';
             } else {
+                // 清理缓存状态（角色切换时）
+                sillyTavernClient.send(JSON.stringify({
+                    type: 'clear_cache',
+                    chatId: chatId
+                }));
+                
                 // 发送命令到前端执行
                 sillyTavernClient.send(JSON.stringify({
                     type: 'execute_command',
@@ -499,6 +532,12 @@ async function handleTelegramCommand(command, args, chatId) {
             if (args.length === 0) {
                 replyText = '请提供聊天记录名称。用法： /switchchat <聊天记录名称>';
             } else {
+                // 清理缓存状态（聊天切换时）
+                sillyTavernClient.send(JSON.stringify({
+                    type: 'clear_cache',
+                    chatId: chatId
+                }));
+                
                 // 发送命令到前端执行
                 sillyTavernClient.send(JSON.stringify({
                     type: 'execute_command',
@@ -513,6 +552,12 @@ async function handleTelegramCommand(command, args, chatId) {
             // 处理特殊格式的命令，如 switchchar_1, switchchat_2 等
             const charMatch = command.match(/^switchchar_(\d+)$/);
             if (charMatch) {
+                // 清理缓存状态（角色切换时）
+                sillyTavernClient.send(JSON.stringify({
+                    type: 'clear_cache',
+                    chatId: chatId
+                }));
+                
                 // 发送命令到前端执行
                 sillyTavernClient.send(JSON.stringify({
                     type: 'execute_command',
@@ -524,6 +569,12 @@ async function handleTelegramCommand(command, args, chatId) {
 
             const chatMatch = command.match(/^switchchat_(\d+)$/);
             if (chatMatch) {
+                // 清理缓存状态（聊天切换时）
+                sillyTavernClient.send(JSON.stringify({
+                    type: 'clear_cache',
+                    chatId: chatId
+                }));
+                
                 // 发送命令到前端执行
                 sillyTavernClient.send(JSON.stringify({
                     type: 'execute_command',
@@ -602,6 +653,7 @@ wss.on('connection', ws => {
                         lastText: data.text,
                         timer: null,
                         isEditing: false, // 新增状态锁
+                        lastActivity: Date.now(), // 记录最后活动时间
                     };
                     ongoingStreams.set(data.chatId, session);
 
@@ -617,6 +669,7 @@ wss.on('connection', ws => {
                 } else {
                     // 2. 如果会话存在，只更新最新文本
                     session.lastText = data.text;
+                    session.lastActivity = Date.now(); // 更新最后活动时间
                 }
 
                 // 3. 尝试触发一次编辑（节流保护）
@@ -814,6 +867,31 @@ wss.on('connection', ws => {
             } else if (data.type === 'user_image' && data.chatId) {
                 // 处理用户发送的图片（已在服务器端处理，这里记录）
                 logWithTimestamp('log', `收到用户图片 (chatId: ${data.chatId})，已转发到SillyTavern`);
+            } else if (data.type === 'clear_cache' && data.chatId) {
+                // 清理指定聊天ID的缓存状态
+                logWithTimestamp('log', `清理ChatID ${data.chatId} 的缓存状态`);
+                const session = ongoingStreams.get(data.chatId);
+                if (session) {
+                    // 清理定时器
+                    if (session.timer) {
+                        clearTimeout(session.timer);
+                    }
+                    // 从Map中删除会话
+                    ongoingStreams.delete(data.chatId);
+                    logWithTimestamp('log', `ChatID ${data.chatId} 的流式会话已清理`);
+                } else {
+                    logWithTimestamp('log', `ChatID ${data.chatId} 没有活跃的流式会话`);
+                }
+            } else if (data.type === 'clear_all_cache') {
+                // 清理所有缓存状态
+                logWithTimestamp('log', '清理所有缓存状态');
+                for (const [chatId, session] of ongoingStreams.entries()) {
+                    if (session.timer) {
+                        clearTimeout(session.timer);
+                    }
+                    ongoingStreams.delete(chatId);
+                }
+                logWithTimestamp('log', `已清理 ${ongoingStreams.size} 个活跃会话`);
             }
         } catch (error) {
             logWithTimestamp('error', '处理SillyTavern消息时出错:', error);
@@ -1021,7 +1099,7 @@ bot.on('message', async (msg) => {
         const args = parts.slice(1);
 
         // 系统命令由服务器直接处理
-        if (['reload', 'restart', 'exit', 'ping'].includes(command)) {
+        if (['reload', 'restart', 'exit', 'ping', 'clearcache'].includes(command)) {
             handleSystemCommand(command, chatId);
             return;
         }
