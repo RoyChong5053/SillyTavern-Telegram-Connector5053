@@ -1,16 +1,12 @@
 // index.js
 
-// 只解构 getContext() 返回的对象中确实存在的属性
-const {
-    extensionSettings,
-    deleteLastMessage, // 导入删除最后一条消息的函数
-    saveSettingsDebounced, // 导入保存设置的函数
-} = SillyTavern.getContext();
+import {
+    extension_settings,
+    getContext,
+    saveSettingsDebounced,
+    renderExtensionTemplateAsync,
+} from "../../../../extensions.js";
 
-// getContext 函数是全局 SillyTavern 对象的一部分，我们不需要从别处导入它
-// 在需要时直接调用 SillyTavern.getContext() 即可
-
-// 从 script.js 导入所有需要的公共API函数
 import {
     eventSource,
     event_types,
@@ -21,6 +17,7 @@ import {
     openCharacterChat,
     Generate,
     setExternalAbortController,
+    deleteLastMessage,
 } from "../../../../script.js";
 
 const MODULE_NAME = 'SillyTavern-Telegram-Connector';
@@ -50,10 +47,10 @@ let reconnectTimer = null;
 
 // --- 工具函数 ---
 function getSettings() {
-    if (!extensionSettings[MODULE_NAME]) {
-        extensionSettings[MODULE_NAME] = { ...DEFAULT_SETTINGS };
+    if (!extension_settings[MODULE_NAME]) {
+        extension_settings[MODULE_NAME] = { ...DEFAULT_SETTINGS };
     }
-    return extensionSettings[MODULE_NAME];
+    return extension_settings[MODULE_NAME];
 }
 
 function updateStatus(message, color) {
@@ -575,7 +572,7 @@ function scheduleReconnect() {
 jQuery(async () => {
     console.log('[Telegram Bridge] 正在尝试加载设置 UI...');
     try {
-        const settingsHtml = await $.get(`/scripts/extensions/third-party/${MODULE_NAME}/settings.html`);
+        const settingsHtml = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
         $('#extensions_settings').append(settingsHtml);
         console.log('[Telegram Bridge] 设置 UI 应该已经被添加。');
 
